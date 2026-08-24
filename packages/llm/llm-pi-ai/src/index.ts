@@ -67,6 +67,7 @@ import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
+import { installSseReassembly, reassemblyOrigins } from './sse-reassembly.ts'
 
 export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
@@ -210,6 +211,10 @@ export function apply(ctx: Context, config: Config): void {
   // composition without it (headless, ACP) simply has no surface to sign in
   // from, while everything else this plugin does still works.
   ctx.inject(['authorization'], (authorized) => { registerPiAiFlows(authorized, auth) })
+  // Relay SSE transport hardening: relays that re-segment OpenAI SSE events
+  // break stock OpenAI SDK parsers; wrap fetch for routes that declare an
+  // explicit endpoint so split events are reassembled transparently.
+  ctx.effect(() => installSseReassembly(() => reassemblyOrigins(profiles())))
   // The full installed catalog is configurable from the moment the plugin
   // mounts — dormant or not — so configuration surfaces can offer every
   // pi-ai provider before any route exists. Hand-declared routes join it as

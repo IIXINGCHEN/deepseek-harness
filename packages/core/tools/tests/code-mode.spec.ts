@@ -6,7 +6,7 @@ import type { Scope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
 import type { CodeRunRequest, CodeRunResult } from '@deepseek-ai/dsh-code-runtime'
-import ToolRuntime, { CodeRunFailedError, RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH, defineContentToolFixture, defineTool } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { CodeRunFailedError, RUN_CODE_NAME, SCHEDULER_UNAVAILABLE_MESSAGE, TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, defineContentToolFixture, defineTool } from '@deepseek-ai/dsh-tools'
 import type { Config, JsonSchemaNode, PostToolDecision, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -618,6 +618,27 @@ describe('the sub-dispatch scheduler (native concurrency contract)', () => {
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected success')
     expect(result.value).toMatchObject({ result: 'unknown tool "ephemeral"' })
+    expect(calls).toEqual([])
+  })
+
+  it('a registry without the scheduler symbol property rejects sub-dispatch with a descriptive error', async () => {
+    const { ctx, runtime } = await setup({ mode: 'code' })
+    const calls = registerEcho(ctx, 'echo')
+    // The incident shape: the registry is present and enumerable, but the
+    // symbol-keyed scheduler view is missing (version-mixed module instance).
+    // oxlint-disable-next-line typescript/no-dynamic-delete -- incident fixture: drop the symbol-keyed view the guard must detect
+    delete (ctx.tools as unknown as Record<symbol, unknown>)[TOOL_RUNTIME_SCHEDULER]
+    runtime.behavior = async (request) => {
+      const message = await request.bindings[0]!.functions.echo!({ value: 'x' })
+        .then(() => 'resolved', (error: unknown) => error instanceof Error ? error.message : String(error))
+      return { logs: [], value: message }
+    }
+    const result = await runCode(ctx, 'program')
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    expect(result.value).toMatchObject({
+      result: SCHEDULER_UNAVAILABLE_MESSAGE,
+    })
     expect(calls).toEqual([])
   })
 

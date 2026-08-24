@@ -14,7 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { assertNever, createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
-import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { SCHEDULER_UNAVAILABLE_MESSAGE, TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext, type ToolRuntimeScheduler } from '@deepseek-ai/dsh-tools'
 
 /** One tool call after argument parsing, ready to schedule. */
 interface PlannedCall {
@@ -129,6 +129,13 @@ async function runGroup(
 ): Promise<GroupOutcome> {
   const { session } = ctx.agents.requireInitiator()
   const { maxParallelToolCalls } = ctx.agentLoop.config
+  // A missing symbol property means the `tools` service is not the ToolRuntime
+  // this loop dispatches through (unregistered, or a version-mixed module
+  // instance minted a different symbol); fail loud instead of dereferencing it.
+  const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER] as ToolRuntimeScheduler | undefined
+  if (scheduler === undefined) {
+    throw new Error(SCHEDULER_UNAVAILABLE_MESSAGE)
+  }
   const slots: (Slot | undefined)[] = group.map(() => undefined)
   // Started slots retain their `tool/call` seq so the result can cite it.
   const callSeqs: number[] = group.map(() => -1)
@@ -149,8 +156,8 @@ async function runGroup(
       if (slot === undefined) break
       const call = group[committed]
       const result = slot.needsPost
-        ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
-        : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
+        ? await scheduler.finalize(slot.exec, slot.result)
+        : scheduler.finish(slot.exec, slot.result)
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
       appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
       for (const context of result.additionalContexts ?? []) acceptContext(context)
@@ -166,11 +173,11 @@ async function runGroup(
     const call = group[index]!
     callSeqs[index] = appendToolCall(session, turn, step, call.block)
     started++
-    const prepared = await ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare(call.exec)
+    const prepared = await scheduler.prepare(call.exec)
     throwSchedulerFailure()
     switch (prepared.kind) {
       case 'dispatch': {
-        const promise = ctx.tools[TOOL_RUNTIME_SCHEDULER].dispatch(prepared.exec).then(
+        const promise = scheduler.dispatch(prepared.exec).then(
           (outcome) => {
             slots[index] = { exec: prepared.exec, result: outcome.result, needsPost: outcome.kind === 'post-result' }
             return index

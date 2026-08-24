@@ -12,7 +12,7 @@ import type { CodeBindingFunction, CodeRunResult, CodeRuntime } from '@deepseek-
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { defineTool, parameterSchemaSpecToJsonSchema } from './schema.ts'
-import { TOOL_RUNTIME_SCHEDULER } from './index.ts'
+import { SCHEDULER_UNAVAILABLE_MESSAGE, TOOL_RUNTIME_SCHEDULER, type ToolRuntimeScheduler } from './index.ts'
 import type { CodeDispatchLog, ToolDefinition, ToolExecutionResult, ToolRuntime, ToolRunContext } from './index.ts'
 import type {} from './types.ts'
 
@@ -480,7 +480,12 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
           signal: runController.signal,
         }
         type DispatchOutcome = { isError: true; message: string } | { isError: false; value: JsonValue }
-        const scheduler = registry[TOOL_RUNTIME_SCHEDULER]
+        // Same missing-symbol failure as the native scheduler's guard: the
+        // registry is not the ToolRuntime this package dispatches through.
+        const scheduler = registry[TOOL_RUNTIME_SCHEDULER] as ToolRuntimeScheduler | undefined
+        if (scheduler === undefined) {
+          throw new Error(SCHEDULER_UNAVAILABLE_MESSAGE)
+        }
         const outcome = await new Promise<DispatchOutcome>((resolve, reject) => {
           // Set by the dispatch stage (or start() for a pre-settled result): what commit() finalizes in submission order.
           let parked:

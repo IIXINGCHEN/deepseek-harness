@@ -465,6 +465,14 @@ export interface ToolRuntimeScheduler {
  */
 export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@deepseek-ai/dsh-tools.scheduler')
 
+/**
+ * Error thrown when a registry lacks the {@link TOOL_RUNTIME_SCHEDULER} view: the
+ * ToolRuntime service is unregistered, or a version-mixed module instance minted
+ * a different symbol. Guards and their tests reference this constant so the
+ * message stays single-sourced.
+ */
+export const SCHEDULER_UNAVAILABLE_MESSAGE = 'tool scheduler is not available on ctx.tools: ensure ToolRuntime service is properly registered'
+
 /** Canonical error code for cancellation after a tool body was invoked. */
 export const TOOL_ABORTED = 'ABORTED'
 

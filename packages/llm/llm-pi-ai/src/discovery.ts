@@ -28,8 +28,9 @@ import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import { catalogModels } from './catalog.ts'
 
 /**
- * Protocols whose model listing this module can read: the two that speak
- * OpenAI's `GET /models` shape with bearer auth. Azure is absent despite its
+ * Protocols whose model listing this module can read: OpenAI-compatible
+ * endpoints (`openai-completions`, `openai-responses`) and Anthropic Messages
+ * endpoints / gateways (`anthropic-messages`). Azure is absent despite its
  * OpenAI lineage — it authenticates with an `api-key` header and requires an
  * `api-version` query — and Codex authenticates through OAuth; guessing at
  * either would report an authentication failure as a provider with no models.
@@ -38,6 +39,7 @@ import { catalogModels } from './catalog.ts'
 const LISTABLE_PROTOCOLS: ReadonlySet<string> = new Set([
   'openai-completions',
   'openai-responses',
+  'anthropic-messages',
 ])
 
 /**
@@ -196,20 +198,22 @@ export async function discoverModels(
   request: LlmModelDiscoveryRequest,
   storedApiKey?: () => Promise<string | undefined>,
 ): Promise<readonly LlmDiscoveredModel[]> {
-  // A catalog route already has its answer, and a better one: the installed
-  // entries carry context windows and output caps no listing endpoint reports.
-  if (request.provider !== undefined) {
-    const installed = catalogModels(request.provider)
-    if (installed.size > 0) {
-      return [...installed.values()].map(model => ({
-        id: model.id,
-        name: model.name,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-      }))
+  // When a baseURL is specified, always interrogate that actual remote endpoint over the wire
+  // so the user receives the exact models configured on their server (e.g. gateway/proxy).
+  // Only when no baseURL is provided, answer from the installed catalog for known providers.
+  const rawBaseURL = request.baseURL?.trim()
+  if (rawBaseURL === undefined || rawBaseURL.length === 0) {
+    if (request.provider !== undefined) {
+      const installed = catalogModels(request.provider)
+      if (installed.size > 0) {
+        return [...installed.values()].map(model => ({
+          id: model.id,
+          name: model.name,
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
+        }))
+      }
     }
-  }
-  if (request.baseURL === undefined || request.baseURL.length === 0) {
     throw new LlmError(
       `pi-ai ships no catalog for provider "${request.provider ?? ''}", so its models can only come from its`
       + " endpoint; set a baseURL, or enter this provider's models by hand",
@@ -229,7 +233,7 @@ export async function discoverModels(
       'DISCOVERY_UNSUPPORTED',
     )
   }
-  const url = listingUrl(request.baseURL)
+  const url = listingUrl(rawBaseURL)
   // A key typed into the form wins: it is the one the user is testing, and it
   // may be the replacement for exactly the stored key that is failing. The
   // stored one is only asked for here, past the catalog short-circuit and the
@@ -239,13 +243,28 @@ export async function discoverModels(
   // relies on the provider's own ambient discovery is meant to be asked.
   const supplied = request.apiKey ?? await storedApiKey?.()
   const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
+  // Dual-header authentication: Anthropic native endpoints require `x-api-key` and
+  // `anthropic-version`, while reverse proxies / gateways (CPA, OneAPI, LiteLLM) often
+  // accept standard `Bearer` tokens on their `/models` endpoint.
+  const authHeaders: Record<string, string> = {}
+  if (apiKey !== undefined) {
+    if (api === 'anthropic-messages') {
+      authHeaders['x-api-key'] = apiKey
+      authHeaders['authorization'] = `Bearer ${apiKey}`
+      authHeaders['anthropic-version'] = '2023-06-01'
+    } else {
+      authHeaders['authorization'] = `Bearer ${apiKey}`
+    }
+  } else if (api === 'anthropic-messages') {
+    authHeaders['anthropic-version'] = '2023-06-01'
+  }
   let response: Response
   try {
     response = await fetch(url, {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        ...apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` },
+        ...authHeaders,
         ...attributionHeaders(),
       },
       ...request.signal === undefined ? {} : { signal: request.signal },

@@ -73,23 +73,22 @@ async function harness(): Promise<Context> {
 }
 
 describe('catalog-route model discovery', () => {
-  it('answers from the installed registry, with capacities and no network call', async () => {
+  it('answers from the installed registry, with capacities and no network call, when no baseURL is provided', async () => {
+    const ctx = await harness()
+    const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })
+
+    expect(models.map(model => model.id).sort())
+      .toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
+    expect(models.every(model => (model.contextWindow ?? 0) > 0 && (model.maxTokens ?? 0) > 0)).toBe(true)
+  })
+
+  it('interrogates the remote endpoint when baseURL is provided, even if the provider is in the catalog', async () => {
     const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'from-the-endpoint' }] }) })
     const ctx = await harness()
 
     const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
-
-    // pi-ai's own registry is the authority for its own providers, and it
-    // carries what a listing endpoint would not disclose.
-    expect(models.map(model => model.id).sort())
-      .toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
-    expect(models.every(model => (model.contextWindow ?? 0) > 0 && (model.maxTokens ?? 0) > 0)).toBe(true)
-    expect(server.paths).toEqual([])
-  })
-
-  it('needs no endpoint for a route the catalog describes', async () => {
-    const ctx = await harness()
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek' })).resolves.not.toHaveLength(0)
+    expect(models).toEqual([{ id: 'from-the-endpoint' }])
+    expect(server.paths).toEqual(['/models'])
   })
 
   it('says where a route the catalog does not describe must get its models', async () => {
@@ -260,7 +259,31 @@ describe('draft-provider model discovery', () => {
       .rejects.toMatchObject({ code: 'DISCOVERY_FAILED' })
   })
 
-  it.each(['anthropic-messages', 'azure-openai-responses', 'openai-codex-responses', 'google-generative-ai'])(
+  it('interrogates anthropic-messages endpoints carrying x-api-key and authorization headers', async () => {
+    const server = await listingServer({
+      body: JSON.stringify({
+        data: [
+          { id: 'claude-3-7-sonnet-20250219', display_name: 'Claude 3.7 Sonnet' },
+          { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', context_window: 200000, max_tokens: 8192 },
+        ],
+      }),
+    })
+    const ctx = await harness()
+    const models = await ctx.llm.discoverModels('llm-pi-ai', {
+      baseURL: server.url,
+      api: 'anthropic-messages',
+      apiKey: 'sk-ant-test',
+    })
+    expect(models).toEqual([
+      { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', contextWindow: 200000, maxTokens: 8192 },
+    ])
+    expect(server.headers[0]?.['x-api-key']).toBe('sk-ant-test')
+    expect(server.headers[0]?.['authorization']).toBe('Bearer sk-ant-test')
+    expect(server.headers[0]?.['anthropic-version']).toBe('2023-06-01')
+  })
+
+  it.each(['azure-openai-responses', 'openai-codex-responses', 'google-generative-ai'])(
     'says it cannot interrogate %s rather than guessing a shape',
     async (api) => {
       // Azure authenticates with an `api-key` header and an `api-version`

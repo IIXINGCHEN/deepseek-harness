@@ -1,0 +1,15 @@
+{
+  "feature": "repo",
+  "pipelineType": "review-and-fix",
+  "currentStage": 5,
+  "stageName": "consolidated-report",
+  "iteration": 1,
+  "completedStages": [
+    "eng-code-review",
+    "eng-review-fix",
+    "eng-validate",
+    "re-review",
+    "consolidated-report"
+  ],
+  "lastUpdated": "2026-08-24T09:28:00.000Z"
+}
