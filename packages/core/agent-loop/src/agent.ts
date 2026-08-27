@@ -438,14 +438,14 @@ export class ReactLoopAgent implements Agent {
     const persistedHeader = session.requestHeader()
     const persistedConfig = persistedHeader?.config
     const route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }
-    const reasoningEffort = persistedConfig?.provider === route.provider
-      && persistedConfig.model === route.model
+    const routeMatches = persistedConfig?.provider === route.provider && persistedConfig.model === route.model
+    const reasoningEffort = routeMatches
       && persistedHeader?.adapterDefaults?.reasoningEffort !== true
       ? persistedConfig.reasoningEffort
       : undefined
     const maxTokens = this.options.maxTokens
     const seedConfig = deepFreeze(structuredClone(
-      this.requestHeaderLogged
+      this.requestHeaderLogged && routeMatches
         // oxlint-disable-next-line typescript/no-non-null-assertion -- the instance logged the header it now folds
         ? requestProposal(persistedHeader!)
         : {
@@ -454,14 +454,21 @@ export class ReactLoopAgent implements Agent {
           ...maxTokens === undefined ? {} : { maxTokens },
         },
     ))
-    const proposedConfig = await this.dispatch.waterfall(
+    const rawProposed = await this.dispatch.waterfall(
       'agent/request', { turn, step, signal },
       () => Promise.resolve(seedConfig),
     )
     signal.throwIfAborted()
-    if (!proposedConfig.provider || !proposedConfig.model) {
+    if (!rawProposed.provider || !rawProposed.model) {
       throw new Error(`agent "${this.id}" has no provider/model: set AgentOptions.provider and AgentOptions.model or supply both via the agent/request waterfall`)
     }
+    const proposedRouteChanged = rawProposed.provider !== seedConfig.provider || rawProposed.model !== seedConfig.model
+    const proposedConfig: LlmCallConfig = proposedRouteChanged && rawProposed.reasoningEffort === seedConfig.reasoningEffort
+      ? (() => {
+        const { reasoningEffort: _inherited, ...rest } = rawProposed
+        return rest
+      })()
+      : rawProposed
     let config: LlmCallConfig
     let preparedCall: PreparedLlmCall | undefined
     try {
@@ -469,8 +476,27 @@ export class ReactLoopAgent implements Agent {
       config = preparedCall.config
     } catch (error: unknown) {
       // Middleware may serve an unregistered route; terminal dispatch still requires an adapter.
-      if (!(error instanceof LlmError) || error.code !== 'NO_ADAPTER') throw error
-      config = proposedConfig
+      if (error instanceof LlmError && error.code === 'NO_ADAPTER') {
+        config = proposedConfig
+      } else if (
+        error instanceof LlmError
+        && error.code === 'UNSUPPORTED_REASONING_EFFORT'
+        && proposedConfig.reasoningEffort !== undefined
+      ) {
+        // The effort reached this step inherited — from the logged header, the
+        // saved default model, or a waterfall proposal — not through a live
+        // selection (those are validated at selection time), so a model that
+        // cannot serve it takes its own default rather than failing the turn.
+        const { reasoningEffort: _unsupported, ...rest } = proposedConfig
+        this.loopCtx.logger.warn(
+          `agent "${this.id}": provider "${proposedConfig.provider}" model "${proposedConfig.model}" `
+          + `does not support reasoning effort "${proposedConfig.reasoningEffort}"; using the model default`,
+        )
+        preparedCall = await this.loopCtx.llm.prepareCall(rest, signal)
+        config = preparedCall.config
+      } else {
+        throw error
+      }
     }
     signal.throwIfAborted()
 

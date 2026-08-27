@@ -8,7 +8,9 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, LlmError, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type {
+  GenerateOptions, LlmModelReasoningInfo, LlmReasoningEffortInfo, LlmResolvedModelInfo, StreamChunk,
+} from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, foldRequestHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
@@ -249,6 +251,128 @@ describe('request stability across the loop', () => {
     const headers = agent.session.events.filter(event => event.type === 'request/header')
     expect(headers.map(event => event.data.header.config.maxTokens)).toEqual([4_096, 4_096])
     expect(headers.map(event => event.data.header.adapterDefaults)).toEqual([undefined, undefined])
+  })
+
+  it('clears an inherited reasoning effort when switching models in agent/request waterfall', async () => {
+    const firstReasoning = {
+      efforts: [
+        { id: ReasoningEffortId('off'), name: 'Off' },
+        { id: ReasoningEffortId('high'), name: 'High' },
+      ],
+      defaultEffort: ReasoningEffortId('off'),
+    }
+    const secondReasoning = {
+      efforts: [
+        { id: ReasoningEffortId('high'), name: 'High' },
+        { id: ReasoningEffortId('max'), name: 'Max' },
+      ],
+      defaultEffort: ReasoningEffortId('high'),
+    }
+    const firstAdapter = new MockAdapter([textResponse('first')], firstReasoning)
+    const secondAdapter = new MockAdapter([textResponse('second')], secondReasoning)
+    const ctx = await harnessRoutes([
+      ['first-provider', firstAdapter],
+      ['second-provider', secondAdapter],
+    ])
+    const agent = ctx.agentLoop.create(SessionId('effort-route-switch'), {
+      provider: 'first-provider',
+      model: 'first-model',
+    })
+    ctx.on('agent/request', async ({ turn }, next) => {
+      const config = await next()
+      return turn === 2
+        ? { ...config, provider: 'second-provider', model: 'second-model' }
+        : config
+    })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+    send(agent, 'second')
+    await waitForIdle(ctx, agent)
+
+    expect(firstAdapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('off'))
+    expect(secondAdapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('high'))
+    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    expect(headers.map(event => event.data.header.config.reasoningEffort)).toEqual([
+      ReasoningEffortId('off'),
+      ReasoningEffortId('high'),
+    ])
+  })
+
+  it('drops an inherited reasoning effort the resolved model cannot serve', async () => {
+    const adapter = new MockAdapter([textResponse('first'), textResponse('second')], {
+      efforts: [
+        { id: ReasoningEffortId('high'), name: 'High' },
+        { id: ReasoningEffortId('max'), name: 'Max' },
+      ],
+      defaultEffort: ReasoningEffortId('high'),
+    })
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('effort-unsupported'), {
+      provider: 'mock',
+      model: 'mock',
+    })
+    // A stale selection source (saved default model, plugin proposal) keeps
+    // asserting an effort this model never supported.
+    ctx.on('agent/request', async (_payload, next) => {
+      const config = await next()
+      return { ...config, reasoningEffort: ReasoningEffortId('off') }
+    })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+    send(agent, 'second')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests.map(request => request.reasoningEffort)).toEqual([
+      ReasoningEffortId('high'),
+      ReasoningEffortId('high'),
+    ])
+    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    expect(headers).toHaveLength(1)
+    expect(headers[0]?.data.header.config.reasoningEffort).toBe(ReasoningEffortId('high'))
+    expect(headers[0]?.data.header.adapterDefaults?.reasoningEffort).toBe(true)
+  })
+
+  it('drops a persisted reasoning effort after the model stops supporting it', async () => {
+    const efforts: LlmReasoningEffortInfo[] = [
+      { id: ReasoningEffortId('off'), name: 'Off' },
+      { id: ReasoningEffortId('high'), name: 'High' },
+    ]
+    const adapter = new MockAdapter([textResponse('first'), textResponse('second')], {
+      efforts,
+      defaultEffort: ReasoningEffortId('high'),
+    })
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('effort-drift'), {
+      provider: 'mock',
+      model: 'mock',
+    })
+    ctx.on('agent/request', async ({ turn }, next) => {
+      const config = await next()
+      return turn === 1 ? { ...config, reasoningEffort: ReasoningEffortId('off') } : config
+    })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+    // The same route drops "off" between turns (a capability change on the
+    // model the persisted header still names).
+    efforts.splice(0, 1)
+    send(agent, 'second')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests.map(request => request.reasoningEffort)).toEqual([
+      ReasoningEffortId('off'),
+      ReasoningEffortId('high'),
+    ])
+    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    expect(headers).toHaveLength(2)
+    expect(headers.map(event => event.data.header.config.reasoningEffort)).toEqual([
+      ReasoningEffortId('off'),
+      ReasoningEffortId('high'),
+    ])
+    expect(headers.map(event => event.data.header.adapterDefaults?.reasoningEffort))
+      .toEqual([undefined, true])
   })
 
   it('keeps exact-model resolution, request logging, and dispatch on one adapter registration', async () => {

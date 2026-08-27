@@ -1100,15 +1100,19 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       get current(): ModelSelection {
         if (picked !== undefined) return picked
         // Incrementally folded by the session, so a per-step read costs
-        // O(new events) rather than a rescan.
-        const logged = agent.session.requestHeader()?.config
+        // O(new events) rather than a rescan. An adapter-defaulted effort is
+        // not a selection: carrying it here would pin the model's default as
+        // if the user chose it (the same rule the loop's request proposal
+        // applies to its seed).
+        const logged = agent.session.requestHeader()
         if (logged === undefined) return defaults.defaultModelSelection()
         return {
-          provider: logged.provider,
-          model: logged.model,
-          ...logged.reasoningEffort === undefined
+          provider: logged.config.provider,
+          model: logged.config.model,
+          ...logged.config.reasoningEffort === undefined
+            || logged.adapterDefaults?.reasoningEffort === true
             ? {}
-            : { reasoningEffort: logged.reasoningEffort },
+            : { reasoningEffort: logged.config.reasoningEffort },
         }
       },
       set current(next: ModelSelection) {
