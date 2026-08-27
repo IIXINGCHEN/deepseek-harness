@@ -77,6 +77,7 @@ async function harness(logged?: {
   provider: string
   model: string
   reasoningEffort?: ReasoningEffortId
+  adapterDefaults?: { reasoningEffort?: true; maxTokens?: true }
 }): Promise<{
   ctx: Context
   agent: Agent
@@ -103,7 +104,14 @@ async function harness(logged?: {
   ]))
   const session = ctx.sessions.create()
   if (logged !== undefined) {
-    session.append('request/header', { header: { config: logged }, reason: 'initial' })
+    const { adapterDefaults, ...config } = logged
+    session.append('request/header', {
+      header: {
+        config,
+        ...adapterDefaults === undefined ? {} : { adapterDefaults },
+      },
+      reason: 'initial',
+    })
   }
   const agent = {
     id: session.id,
@@ -407,6 +415,20 @@ describe('Web session model selection', () => {
     })
 
     stored = { provider: 'duplicate', model: 'same' }
+    expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
+      .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
+    await ctx.fiber.dispose()
+  })
+
+  it('reports a logged adapter-default effort as no selection effort, not an explicit pick', async () => {
+    const { ctx, sessionId } = await harness({
+      provider: 'deepseek-official',
+      model: 'deepseek-chat',
+      reasoningEffort: ReasoningEffortId('high'),
+      adapterDefaults: { reasoningEffort: true },
+    })
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp' })
+
     expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
       .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
     await ctx.fiber.dispose()

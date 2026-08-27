@@ -1,15 +1,21 @@
 {
-  "feature": "repo",
-  "pipelineType": "review-and-fix",
-  "currentStage": 5,
-  "stageName": "consolidated-report",
-  "iteration": 1,
+  "feature": "Inherited reasoning effort isolation and start-dsh service management",
+  "pipelineType": "review-and-ship",
+  "currentStage": 7,
+  "stageName": "delivery-target-resolution",
+  "pass": 3,
+  "maxPasses": 5,
   "completedStages": [
     "eng-code-review",
     "eng-review-fix",
     "eng-validate",
-    "re-review",
-    "consolidated-report"
+    "eng-completion-gate",
+    "eng-git-commit"
   ],
-  "lastUpdated": "2026-08-24T09:28:00.000Z"
+  "deliveryTarget": {
+    "remote": "origin",
+    "branch": "master",
+    "authorized": false
+  },
+  "lastUpdated": "2026-08-27T11:22:04.983Z"
 }
