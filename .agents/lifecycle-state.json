@@ -1,25 +1,20 @@
 {
-  "feature": "Inherited reasoning effort isolation and start-dsh service management",
-  "pipelineType": "review-and-ship",
-  "currentStage": 8,
-  "stageName": "authorized-delivery",
+  "feature": "Strict privacy and secret leak audit",
+  "pipelineType": "review-and-fix",
+  "currentStage": 5,
+  "stageName": "consolidated-report",
   "pass": 3,
   "maxPasses": 5,
+  "repairRound": 0,
   "completedStages": [
     "eng-code-review",
-    "eng-review-fix",
     "eng-validate",
-    "eng-completion-gate",
-    "eng-git-commit",
-    "delivery-target-resolution",
-    "authorized-delivery"
+    "eng-code-review",
+    "eng-validate",
+    "eng-code-review",
+    "eng-validate",
+    "resolution-confirmation",
+    "consolidated-report"
   ],
-  "deliveryTarget": {
-    "remote": "origin",
-    "branch": "fix/inherited-reasoning-effort-isolation",
-    "authorized": true,
-    "result": "PR OPENED",
-    "prUrl": "https://github.com/IIXINGCHEN/deepseek-harness/pull/1"
-  },
-  "lastUpdated": "2026-08-27T11:27:56.309Z"
+  "lastUpdated": "2026-08-27T12:11:18.869Z"
 }
