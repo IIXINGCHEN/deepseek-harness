@@ -1,20 +1,21 @@
 {
   "feature": "Inherited reasoning effort isolation and start-dsh service management",
-  "pipelineType": "review-and-fix",
-  "currentStage": 5,
-  "stageName": "consolidated-report",
+  "pipelineType": "review-and-ship",
+  "currentStage": 7,
+  "stageName": "delivery-target-resolution",
   "pass": 3,
   "maxPasses": 5,
-  "repairRound": 0,
   "completedStages": [
     "eng-code-review",
+    "eng-review-fix",
     "eng-validate",
-    "eng-code-review",
-    "eng-validate",
-    "eng-code-review",
-    "eng-validate",
-    "resolution-confirmation",
-    "consolidated-report"
+    "eng-completion-gate",
+    "eng-git-commit"
   ],
-  "lastUpdated": "2026-08-27T11:11:00.625Z"
+  "deliveryTarget": {
+    "remote": "origin",
+    "branch": "master",
+    "authorized": false
+  },
+  "lastUpdated": "2026-08-27T11:22:04.983Z"
 }
