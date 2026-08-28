@@ -20,4 +20,8 @@ upstream 在 `be531688f3` 删除了 `packages/client/runtime`（`@deepseek-ai/ds
 
 ## Not covered
 
-消费已消解服务端或客户端服务（`apiProxy`、`conversationEvents`）的 entry 仍然失败或保持 pending；任何 seed entry 都无法满足它们，因为这些服务已不存在于任何形式。`web-ui-remote-web-ui`、`web-ui-task-board`、`dsh-hud` 三个 profile entry 因此被禁用，直至其发布者交付针对 `0.1.2-alpha.1` 构建的版本。
+消费已消解服务端 `apiProxy` 服务的 entry 仍然失败；任何 seed entry 都无法满足它们，因为该服务已不存在于任何形式。`web-ui-remote-web-ui`、`web-ui-task-board`、`dsh-hud` 三个 profile entry 因此被禁用，直至其发布者交付针对 `0.1.2-alpha.1` 构建的版本。
+
+## 后续：conversationEvents 服务别名
+
+`conversationEvents` 客户端服务与本次迁移一样幸存为活跃的 `UiConversation.events` 注册表（`ConversationEventRegistry`，`ConversationNodeDefinition` 契约一致），只是挂载点更名。`ui-conversation` 的 client `apply` 现以旧服务名提供该活跃实例，使注入 `conversationEvents` 的删除前 bundle（例如 `@nanmicoder/dsh-agent-teams`）得以激活并通过新管线渲染，而非保持 pending。移除条件与 seed 键相同。

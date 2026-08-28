@@ -20,4 +20,8 @@ Both edits carry removal conditions: drop the key once no installed plugin bundl
 
 ## Not covered
 
-Entries consuming dissolved server- or client-side services (`apiProxy`, `conversationEvents`) still fail or stay pending; no seed entry can satisfy them because the services no longer exist in any form. The `web-ui-remote-web-ui`, `web-ui-task-board`, and `dsh-hud` profile entries are disabled for that reason until their publishers ship versions built against `0.1.2-alpha.1`.
+Entries consuming the dissolved server-side `apiProxy` service still fail; no seed entry can satisfy them because the service no longer exists in any form. The `web-ui-remote-web-ui`, `web-ui-task-board`, and `dsh-hud` profile entries are disabled for that reason until their publishers ship versions built against `0.1.2-alpha.1`.
+
+## Follow-up: conversationEvents service alias
+
+The `conversationEvents` client service survived the same migration as the live `UiConversation.events` registry (`ConversationEventRegistry`, identical `ConversationNodeDefinition` contract) under a new mount point. `ui-conversation`'s client `apply` now provides that live instance under the old service name, so pre-removal bundles injecting `conversationEvents` (for example `@nanmicoder/dsh-agent-teams`) activate and render through the new pipeline instead of staying pending. Same removal condition as the seed key.

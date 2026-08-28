@@ -99,6 +99,12 @@ export function apply(ctx: Context): void {
   const workspaceNavigation = ctx.get('uiWorkspace') as unknown as WorkspaceNavigation
   const uiConversation = new UiConversation(ctx, sessions)
 
+  // Fork-local compatibility provide: pre-0.1.2 plugin bundles consume the
+  // dissolved client-runtime service name 'conversationEvents'. The live
+  // UiConversation registry answers them with the same register contract;
+  // remove once no installed plugin bundle injects the old name.
+  ctx.reflect.provide('conversationEvents', uiConversation.events)
+
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-conversation: dictionaries')
   const t = ctx.locale.bind(NS)
   const conversationStore = createConversationStore()
