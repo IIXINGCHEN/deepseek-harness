@@ -635,7 +635,7 @@ describe('the sub-dispatch scheduler (native concurrency contract)', () => {
   })
 
   it('a registry without the scheduler symbol property rejects sub-dispatch with a descriptive error', async () => {
-    const { ctx, runtime } = await setup({ mode: 'code' })
+    const { ctx, runtime } = await setup({ mode: 'ptc' })
     const calls = registerEcho(ctx, 'echo')
     // The incident shape: the registry is present and enumerable, but the
     // symbol-keyed scheduler view is missing (version-mixed module instance).

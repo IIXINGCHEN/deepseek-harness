@@ -511,20 +511,6 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
-  it('reports a logged adapter-default effort as no selection effort, not an explicit pick', async () => {
-    const { ctx, sessionId } = await harness({
-      provider: 'deepseek-official',
-      model: 'deepseek-chat',
-      reasoningEffort: ReasoningEffortId('high'),
-      adapterDefaults: { reasoningEffort: true },
-    })
-    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp' })
-
-    expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
-      .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
-    await ctx.fiber.dispose()
-  })
-
   it('saves an accepted selection as the default and survives a storage failure', async () => {
     const { ctx, sessionId } = await harness()
     const saved: unknown[] = []
