@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-28-client-runtime-compat-seed.md
-2026-08-28-client-runtime-compat-seed.md: ecaf8045ff4359e43876d2ffd49198012873b069
-2026-08-28-client-runtime-compat-seed.zh.md: 9ca01865c86b4f86178bbbcc4e0fab25290b0000
+2026-08-28-client-runtime-compat-seed.md: f540386bace9d4f9b0e1eeec2c57771ecdde0872
+2026-08-28-client-runtime-compat-seed.zh.md: 45ca0037c57d0dacb6b3bbfbebc33afbc8efa9a4

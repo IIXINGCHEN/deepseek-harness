@@ -20,8 +20,12 @@ Both edits carry removal conditions: drop the key once no installed plugin bundl
 
 ## Not covered
 
-Entries consuming the dissolved server-side `apiProxy` service still fail; no seed entry can satisfy them because the service no longer exists in any form. The `web-ui-remote-web-ui`, `web-ui-task-board`, and `dsh-hud` profile entries are disabled for that reason until their publishers ship versions built against `0.1.2-alpha.1`.
+The seed key cannot satisfy consumers of dissolved services; those need the service itself (see the follow-ups). The `web-ui-remote-web-ui`, `web-ui-task-board`, and `dsh-hud` profile entries were disabled until their services were bridged, and stay disabled or partial until their publishers ship versions built against `0.1.2-alpha.1`.
 
 ## Follow-up: conversationEvents service alias
 
 The `conversationEvents` client service survived the same migration as the live `UiConversation.events` registry (`ConversationEventRegistry`, identical `ConversationNodeDefinition` contract) under a new mount point. `ui-conversation`'s client `apply` now provides that live instance under the old service name, so pre-removal bundles injecting `conversationEvents` (for example `@nanmicoder/dsh-agent-teams`) activate and render through the new pipeline instead of staying pending. Same removal condition as the seed key.
+
+## Follow-up: apiProxy service adapter
+
+The server-side `apiProxy` service survived as the session-controller Remote surface. The session-controller plugin now provides the old service name backed by an adapter that mirrors the old `sessions.models` contract (same RPC envelope, `resolveAgent` for session lookup, `selectionFor` for the current selection, `buildModelCatalog` for groups and failures, `routableProviders` for the routable flag). Only `sessions.models` is bridged — the verb the installed bundles consume; unbridged verbs surface as loud missing-method errors rather than silent wrong answers. Same removal condition as the seed key.

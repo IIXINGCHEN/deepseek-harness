@@ -20,8 +20,12 @@ upstream 在 `be531688f3` 删除了 `packages/client/runtime`（`@deepseek-ai/ds
 
 ## Not covered
 
-消费已消解服务端 `apiProxy` 服务的 entry 仍然失败；任何 seed entry 都无法满足它们，因为该服务已不存在于任何形式。`web-ui-remote-web-ui`、`web-ui-task-board`、`dsh-hud` 三个 profile entry 因此被禁用，直至其发布者交付针对 `0.1.2-alpha.1` 构建的版本。
+seed 键无法满足已消解服务的消费者；这些需要服务本体（见后续章节）。`web-ui-remote-web-ui`、`web-ui-task-board`、`dsh-hud` 三个 profile entry 在其服务被桥接前曾被禁用，并在其发布者交付针对 `0.1.2-alpha.1` 构建的版本前保持禁用或部分可用。
 
 ## 后续：conversationEvents 服务别名
 
 `conversationEvents` 客户端服务与本次迁移一样幸存为活跃的 `UiConversation.events` 注册表（`ConversationEventRegistry`，`ConversationNodeDefinition` 契约一致），只是挂载点更名。`ui-conversation` 的 client `apply` 现以旧服务名提供该活跃实例，使注入 `conversationEvents` 的删除前 bundle（例如 `@nanmicoder/dsh-agent-teams`）得以激活并通过新管线渲染，而非保持 pending。移除条件与 seed 键相同。
+
+## 后续：apiProxy 服务适配器
+
+服务端 `apiProxy` 服务幸存为 session-controller 的 Remote 表面。session-controller 插件现以旧服务名提供一个适配器，逐字镜像旧 `sessions.models` 契约（相同 RPC 信封、`resolveAgent` 做 session 查找、`selectionFor` 取当前选择、`buildModelCatalog` 提供 groups 与 failures、`routableProviders` 提供 routable 标志）。仅桥接了已装 bundle 消费的 `sessions.models` 一个动词；未桥接的动词会以响亮的 missing-method 错误浮出，而非静默错误应答。移除条件与 seed 键相同。

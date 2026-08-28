@@ -115,6 +115,34 @@ export class SessionController extends TypertRemoteService {
     super(ctx, 'sessionController', { namespace: 'session' })
     installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
+    // Fork-local compatibility provide: pre-0.1.2 plugin bundles consume the
+    // removed ApiProxy service name. sessions.models answers from the same
+    // selection and catalog the Remote surface uses, under the old RPC
+    // envelope; remove once no installed plugin bundle injects the old name.
+    ctx.reflect.provide('apiProxy', {
+      sessions: {
+        models: async (request: { rpcId: unknown; payload: { sessionId: SessionId } }) => {
+          const found = await this.resolveAgent(request.payload.sessionId)
+          if ('error' in found) {
+            return { rpcId: request.rpcId, result: { ok: false, error: found.error } }
+          }
+          const current = this.agents.selectionFor(found.agent).current
+          const catalog = await buildModelCatalog(ctx)
+          return {
+            rpcId: request.rpcId,
+            result: {
+              ok: true,
+              value: {
+                current: { ...current },
+                routable: catalog.routableProviders.includes(current.provider),
+                groups: catalog.groups,
+                failures: catalog.failures,
+              },
+            },
+          }
+        },
+      },
+    })
     this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
     this.controlState = new SessionControlController(ctx)
     // Registered before history so reverse-order teardown closes every
