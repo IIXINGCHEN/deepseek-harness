@@ -1,5 +1,5 @@
 {
-  "feature": ".agents version-control policy review",
+  "feature": "upstream-update-staleness-gate-and-profile-precheck",
   "pipelineType": "review-and-fix",
   "currentStage": 5,
   "stageName": "consolidated-report",
@@ -8,8 +8,10 @@
   "repairRound": 0,
   "completedStages": [
     "eng-code-review",
+    "eng-review-fix",
+    "eng-validate",
     "resolution-confirmation",
     "consolidated-report"
   ],
-  "lastUpdated": "2026-08-27T13:25:11.791Z"
+  "lastUpdated": "2026-08-28T17:15:00+08:00"
 }
