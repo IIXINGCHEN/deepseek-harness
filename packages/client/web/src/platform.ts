@@ -10,6 +10,12 @@ export const PLATFORM_MODULES = [
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
+  // Fork-local compatibility key: the upstream Runtime removal (be531688f3)
+  // deleted this specifier while installed third-party client bundles still
+  // require it. Their surviving usage (createSnapshotStore, defineStore) is
+  // answered by the dsh-client-store instance in seed.ts. Remove the key
+  // once no installed plugin bundle requires it.
+  '@deepseek-ai/dsh-client-runtime/client',
 ] as const
 
 /** Client-bundle specifiers whose factories the parser preloads before the shell starts. */
