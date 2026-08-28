@@ -1,5 +1,5 @@
 {
-  "feature": "Strict privacy and secret leak audit",
+  "feature": ".agents version-control policy review",
   "pipelineType": "review-and-fix",
   "currentStage": 5,
   "stageName": "consolidated-report",
@@ -8,13 +8,8 @@
   "repairRound": 0,
   "completedStages": [
     "eng-code-review",
-    "eng-validate",
-    "eng-code-review",
-    "eng-validate",
-    "eng-code-review",
-    "eng-validate",
     "resolution-confirmation",
     "consolidated-report"
   ],
-  "lastUpdated": "2026-08-27T12:11:18.869Z"
+  "lastUpdated": "2026-08-27T13:25:11.791Z"
 }
