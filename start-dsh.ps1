@@ -670,6 +670,58 @@ function Stop-DshService([int]$TargetPort, [switch]$Silent) {
   return $false
 }
 
+# --- 工具函数: 检测构建产物是否落后于源码 (更新后未重建) ----------------------
+# 上游合并只更新 src; preset/patch 等 YAML 数据拉取即生效, 而 lib/dist 产物要
+# 重建才更新——不重建时运行面仍是旧代码、数据已是新格式, 组合层漂移即由此产生
+# ("每次官方仓库更新就出错"的主因之一)。扫描 packages/apps/vendor 下的 src 树
+# 与 lib/dist 树, 比较两侧最新修改时间: 任一源文件新于全部产物即为陈旧。
+# node_modules 与 .git 不参与; tests 目录不属于运行面, 不计入。
+function Test-BuildArtifactsStale([string]$RepoRoot) {
+  $newestSrc = [datetime]::MinValue
+  $newestArt = [datetime]::MinValue
+  $skipNames = @{ 'node_modules' = $true; '.git' = $true }
+  $stack = [System.Collections.Generic.Stack[object[]]]::new()
+  foreach ($top in @('packages', 'apps', 'vendor')) {
+    $dir = Join-Path $RepoRoot $top
+    if (Test-Path $dir) { [void]$stack.Push(@($dir, '')) }
+  }
+  while ($stack.Count -gt 0) {
+    $entry = $stack.Pop()
+    $dir = $entry[0]
+    $plane = $entry[1]
+    if ($plane -eq '') {
+      $leaf = [System.IO.Path]::GetFileName($dir)
+      if ($leaf -ieq 'src') { $plane = 'src' }
+      elseif ($leaf -ieq 'lib' -or $leaf -ieq 'dist') { $plane = 'art' }
+    }
+    if ($plane -eq '') {
+      foreach ($child in [System.IO.Directory]::EnumerateDirectories($dir)) {
+        $childLeaf = [System.IO.Path]::GetFileName($child)
+        if (-not $skipNames.ContainsKey($childLeaf)) { [void]$stack.Push(@($child, '')) }
+      }
+      continue
+    }
+    foreach ($file in [System.IO.Directory]::EnumerateFiles($dir)) {
+      $ext = [System.IO.Path]::GetExtension($file).ToLowerInvariant()
+      if ($plane -eq 'src') {
+        if ($ext -ne '.ts' -and $ext -ne '.tsx' -and $ext -ne '.mts' -and $ext -ne '.cts') { continue }
+      } else {
+        if ($ext -ne '.js' -and $ext -ne '.mjs' -and $ext -ne '.cjs' -and $ext -ne '.ts') { continue }
+      }
+      $stamp = [System.IO.File]::GetLastWriteTimeUtc($file)
+      if ($plane -eq 'src') {
+        if ($stamp -gt $newestSrc) { $newestSrc = $stamp }
+      } else {
+        if ($stamp -gt $newestArt) { $newestArt = $stamp }
+      }
+    }
+    foreach ($child in [System.IO.Directory]::EnumerateDirectories($dir)) {
+      [void]$stack.Push(@($child, $plane))
+    }
+  }
+  return ($newestSrc -gt $newestArt)
+}
+
 # --- 核心阶段 6: 全面自检引擎 (DSH Full Self-Check Pipeline) -------------------
 function Invoke-DshSelfCheck([switch]$AutoFix, [switch]$PerformBuild) {
   # 结果经 $script:SelfCheckFailed 传递；pnpm/node 的裸输出会污染布尔返回值
@@ -730,6 +782,7 @@ function Invoke-DshSelfCheck([switch]$AutoFix, [switch]$PerformBuild) {
   $bootLib = Join-Path $repoRoot 'packages\boot\app-boot\lib\index.js'
 
   $missingArtifacts = (-not (Test-Path $webDist)) -or (-not (Test-Path $cliDist)) -or (-not (Test-Path $bootLib))
+  $staleArtifacts = if ($missingArtifacts) { $false } else { Test-BuildArtifactsStale $repoRoot }
   if ($PerformBuild -or $missingArtifacts) {
     Write-Host '[自检 4/6] 正在构建项目产物 (pnpm run build)...' -ForegroundColor Cyan
     & pnpm run build
@@ -739,6 +792,17 @@ function Invoke-DshSelfCheck([switch]$AutoFix, [switch]$PerformBuild) {
       return
     }
     Write-Host '[自检 4/6] ✅ 构建成功，产物完整。' -ForegroundColor Green
+  } elseif ($staleArtifacts) {
+    # 源码比产物新: 仓库更新后未重建。不重建则服务继续运行旧代码, 而数据文件
+    # (preset/patch YAML) 已是新的——组合层漂移由此产生, 必须先重建再启动。
+    Write-Host '[自检 4/6] 检测到源码比构建产物新 (更新后未重建)，正在重建 (pnpm run build)...' -ForegroundColor Yellow
+    & pnpm run build
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host '[自检 4/6] ❌ 产物重建失败，存在错误！' -ForegroundColor Red
+      $script:SelfCheckFailed = $true
+      return
+    }
+    Write-Host '[自检 4/6] ✅ 产物已重建至最新源码。' -ForegroundColor Green
   } else {
     Write-Host '[自检 4/6] ✅ 构建产物均已就绪。' -ForegroundColor Green
   }
@@ -757,6 +821,7 @@ const anchor = repoRoot + '/apps/cli/package.json'
 const pkgPath = profileDir + '/package.json'
 const deps = Object.keys(JSON.parse(readFileSync(pkgPath, 'utf8')).dependencies || {})
 const rq = createRequire(pkgPath)
+const rqRepo = createRequire(anchor)
 const missing = deps.filter(d => { try { rq.resolve(d); return false } catch { return true } })
 if (missing.length) { console.error('[start] web profile 依赖未正确安装: ' + missing.join(', ')); process.exit(1) }
 const boot = await import(pathToFileURL(repoRoot + '/packages/boot/app-boot/lib/index.js').href)
@@ -779,14 +844,82 @@ try {
       }
     }
   }
-  boot.composeEntries([...loaded.layers.map(l => l.patches), loaded.patches])
+  const composed = boot.composeEntries([...loaded.layers.map(l => l.patches), loaded.patches])
+  // 注意: 本脚本经 PowerShell 5.1 的原生参数传给 node -e, 空行会截断参数,
+  // 因此全脚本禁止空行 (与原脚本同一约束)。
+  const hasJsExpr = (value) => {
+    if (value === null || typeof value !== 'object') return false
+    if (Array.isArray(value)) return value.some(hasJsExpr)
+    return Object.entries(value).some(([key, item]) => key === '__jsExpr' || hasJsExpr(item))
+  }
+  // 字面禁用才确定不挂载; !!js 守卫行只有 boot 上下文能求值, 交给守卫自己。
+  const isEnabled = (row) => row.disabled === undefined || row.disabled === null || row.disabled === false
+  const isPackageSpecifier = (name) => !name.startsWith('cordis:') && !name.startsWith('.') && !name.startsWith('/') && !name.includes('\\') && !/^[A-Za-z]:/.test(name)
+  // 深度校验 ①: 启用条目的 config 用其插件包导出的 Config schema 校验。组合
+  // 数据 (preset/patch YAML) 与插件代码 (lib) 各自更新、单独看都合法, 合起来
+  // 才非法的漂移 (如 mode 枚举) 只有这里照得到; boot 在启动期才报。
+  const schemaFailures = []
+  const moduleCache = new Map()
+  for (const row of composed) {
+    if (!row || typeof row.name !== 'string' || !isEnabled(row)) continue
+    if (row.config === undefined || hasJsExpr(row.config)) continue
+    if (!isPackageSpecifier(row.name)) continue
+    let mod = moduleCache.get(row.name)
+    if (mod === undefined) {
+      try {
+        mod = await import(pathToFileURL(rq.resolve(row.name)).href)
+      } catch {
+        try { mod = await import(pathToFileURL(rqRepo.resolve(row.name)).href) }
+        catch (error) {
+          mod = null
+          console.warn('[start] 预检提示: ' + row.name + ' 无法预加载, 跳过其 config 校验: ' + (error?.message ?? error))
+        }
+      }
+      moduleCache.set(row.name, mod)
+    }
+    if (mod === null) continue
+    const exported = mod.default && typeof mod.default === 'object' && mod.default.Config !== undefined ? mod.default : mod
+    const schema = exported.Config
+    if (typeof schema !== 'function') continue
+    try { schema(row.config) } catch (error) {
+      schemaFailures.push({ id: row.id ?? '(无 id)', name: row.name, message: String(error.message).split('\n')[0] })
+    }
+  }
+  if (schemaFailures.length > 0) {
+    for (const failure of schemaFailures) {
+      console.error('[start] 错误: 插件条目 ' + failure.id + ' (' + failure.name + ') 的 config 未通过该插件 schema 校验: ' + failure.message)
+    }
+    console.error('[start] 修复方向: 更新/回退对应插件版本, 或修改 cordis.patch.yml 中该条目的 config (重装依赖无效)。')
+    process.exit(2)
+  }
+  // 深度校验 ②: 同名多挂载提示。不同 id 挂同一插件包时, webserver 类插件会因
+  // 重复注册前缀路由在启动期崩掉整棵插件树 ('duplicate prefix route')。这里
+  // 只提示不改配置: boot 的失败是权威信号, 提示让修复方向在启动前就可见。
+  const byName = new Map()
+  for (const row of composed) {
+    if (!row || typeof row.name !== 'string' || !isEnabled(row)) continue
+    if (!byName.has(row.name)) byName.set(row.name, [])
+    byName.get(row.name).push(String(row.id ?? row.name))
+  }
+  for (const [name, ids] of byName) {
+    if (ids.length < 2) continue
+    console.warn('[start] 警告: 插件 ' + name + ' 被 ' + ids.length + ' 个启用条目同时挂载 (' + ids.join(', ') + '); 若启动报 duplicate prefix route, 请在 cordis.patch.yml 禁用其中一个条目')
+  }
 }
 catch (e) { console.error('[start] web profile bundles 预检失败: ' + e.message); process.exit(1) }
 '@
 
   if (Test-Path (Join-Path $webProfileDir 'package.json')) {
     & node --input-type=module -e $profileCheckScript $repoRoot 'web' $webProfileDir
-    if ($LASTEXITCODE -ne 0) {
+    $precheckExit = $LASTEXITCODE
+    if ($precheckExit -eq 2) {
+      # 深度校验失败 (config 与插件 schema 漂移等组合层问题): 重装依赖修不了,
+      # 必须按上方条目提示更新插件或修改 cordis.patch.yml。
+      Write-Host '[自检 5/6] ❌ Web Profile 插件组合深度校验失败 (按上方条目处理，重装依赖无效)！' -ForegroundColor Red
+      $script:SelfCheckFailed = $true
+      return
+    }
+    if ($precheckExit -ne 0) {
       Write-Host '[自检 5/6] 正在自动修复 Web Profile 依赖...' -ForegroundColor Yellow
       if (Test-Path $cliDist) {
         & node $cliDist plugin --profile web install
@@ -795,6 +928,13 @@ catch (e) { console.error('[start] web profile bundles 预检失败: ' + e.messa
       }
       if ($LASTEXITCODE -ne 0) {
         Write-Host '[自检 5/6] ❌ Web Profile 依赖修复失败！' -ForegroundColor Red
+        $script:SelfCheckFailed = $true
+        return
+      }
+      # 依赖修复会改变组合 (bundle 增删), 重新深度校验确认修复后状态。
+      & node --input-type=module -e $profileCheckScript $repoRoot 'web' $webProfileDir
+      if ($LASTEXITCODE -eq 2) {
+        Write-Host '[自检 5/6] ❌ 依赖修复后插件组合深度校验仍失败 (按上方条目处理)！' -ForegroundColor Red
         $script:SelfCheckFailed = $true
         return
       }
@@ -1044,7 +1184,18 @@ function Start-DshService([switch]$RunInBackground) {
       Write-Host "[start] 运行日志: $stdoutLog" -ForegroundColor DarkGray
 
       if (-not $NoOpen) {
-        try { Start-Process "http://127.0.0.1:$Port/" } catch { }
+        # 后台模式下应用以 --no-open 启动, 不再自行打开浏览器。服务就绪后其
+        # stdout 日志会打印带启动 token 的认证 URL; 打开该 URL 才能换到会话
+        # cookie, 裸地址对没有既有 cookie 的浏览器只会得到 401 页面。
+        $openUrl = $null
+        try {
+          $printed = Select-String -Path $stdoutLog -Pattern 'dsh web: (\S+)' -ErrorAction SilentlyContinue | Select-Object -Last 1
+          if ($printed -and $printed.Matches.Count -gt 0 -and $printed.Matches[0].Groups.Count -gt 1) {
+            $openUrl = $printed.Matches[0].Groups[1].Value
+          }
+        } catch { }
+        if (-not $openUrl) { $openUrl = "http://127.0.0.1:$Port/" }
+        try { Start-Process $openUrl } catch { }
       }
     } elseif ($ready.ProcessAlive) {
       Write-Host "[start] 警告: 服务未在 $readyWaitSec 秒内完成端口监听，进程仍在启动中，已保留 (PID $($proc.Id))；请稍后执行 status 查看或访问 http://127.0.0.1:$Port/ 确认，日志: $stderrLog" -ForegroundColor Yellow
