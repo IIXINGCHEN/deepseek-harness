@@ -146,6 +146,21 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * Preset ids a rename superseded, mapped to the id that replaced them.
+ *
+ * A rename deliberately leaves session-persistent vocabulary alone
+ * (3ca9c7d489), so sessions logged before it still record the old id in their
+ * `agentPreset` projection and resolve it on every resume. The translation is
+ * a fallback only: a root that still supplies the requested id wins, so a
+ * deployment defining its own preset under a legacy name keeps working.
+ */
+const LEGACY_PRESET_IDS: Readonly<Record<string, string>> = {
+  // `code` was the PTC preset's id before the rename to `ptc`; the composition
+  // itself was unchanged.
+  code: 'ptc',
+}
+
+/**
  * Registry over the deployment's agent presets.
  *
  * Discovery is unmemoized: `list()` and `resolve()` re-read the roots on every
@@ -335,17 +350,22 @@ export class AgentPresets extends TypertRemoteService {
    *
    * A broken preset resolves — deleting one, reading one, and reporting one
    * all need the row — and the mounting paths refuse it AFTER resolution
-   * through {@link resolveMountable}.
+   * through {@link resolveMountable}. An id from {@link LEGACY_PRESET_IDS}
+   * whose replacement no root supersedes resolves to its renamed preset, so
+   * sessions logged before the rename keep resuming.
    * @param id - the preset id, or `undefined` for {@link defaultId}.
    * @returns the resolved preset.
-   * @throws when no configured root supplies that id.
+   * @throws when no configured root supplies that id (the error names the
+   *   requested id, never its legacy translation).
    */
   async resolve(id?: string): Promise<AgentPreset> {
-    const wanted = id ?? this.defaultId
+    const requested = id ?? this.defaultId
+    const legacy = id === undefined ? undefined : LEGACY_PRESET_IDS[id]
     const presets = await this.list()
-    const found = presets.find(preset => preset.id === wanted)
+    const found = presets.find(preset => preset.id === requested)
+      ?? (legacy === undefined ? undefined : presets.find(preset => preset.id === legacy))
     if (found === undefined) {
-      throw new UnknownPresetError(wanted, presets.map(preset => preset.id))
+      throw new UnknownPresetError(requested, presets.map(preset => preset.id))
     }
     return found
   }

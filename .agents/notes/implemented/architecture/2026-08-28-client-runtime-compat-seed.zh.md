@@ -29,3 +29,17 @@ seed 键无法满足已消解服务的消费者；这些需要服务本体（见
 ## 后续：apiProxy 服务适配器
 
 服务端 `apiProxy` 服务幸存为 session-controller 的 Remote 表面。session-controller 插件现以旧服务名提供一个适配器，逐字镜像旧 `sessions.models` 契约（相同 RPC 信封、`resolveAgent` 做 session 查找、`selectionFor` 取当前选择、`buildModelCatalog` 提供 groups 与 failures、`routableProviders` 提供 routable 标志）。仅桥接了已装 bundle 消费的 `sessions.models` 一个动词；未桥接的动词会以响亮的 missing-method 错误浮出，而非静默错误应答。移除条件与 seed 键相同。
+
+## 备选方案
+
+**重新实现一个 fork 本地的 `@deepseek-ai/dsh-client-runtime` 包。** 兼容包能应答对已删模块的任何 require，但对已装 bundle 的扫描发现被消费的表面只有两个符号，且 `dsh-client-store` 均已导出——新增一个共享模块（自带发布、lint 与供应链表面）换不来 seed 别名给不了的东西。
+
+**让删除前 bundle 保持 pending，等发布者重新构建。** 什么都不做会让 `web-ui-remote-web-ui`、`web-ui-task-board`、`dsh-hud` 持续禁用，所有 require 旧说明符或注入旧服务名的 bundle 无法加载——判断准确，但本部署的 UI 将被第三方发布节奏卡住，而那些标识符幸存的表面完好、每个都只需一行桥接。
+
+**把已删除的 `apiProxy` 表面整个加回来。** 镜像已消解服务的每个动词能保全 API 兼容；本文拒绝它是因为只有 `sessions.models` 被消费，未桥接动词的静默错误应答比响亮报错更糟，因此适配器只桥接被消费的那个动词。
+
+## 后果
+
+代价：冻结模块表现在携带一个不对应任何包的键；profile 保留若干禁用 entry，其回归取决于各桥接落地——每条移除条件都要求删除前重新扫描已装 bundle。兼容名的未桥接动词会响亮失败而非作答，这在旧 bundle 等到某个动词被有意桥接之前会以报错形式浮出。
+
+收益：预构建插件 bundle 无需重新发布即可在改名后的运行时加载；会话注册表与会话模型表面重新应答旧名；2026-08 合并消解的服务按「一次一个被消费动词」的方式重新可达——`satisfies` 钉与每条桥接自带的移除条件让这条兼容缝可删而不是永久。

@@ -29,3 +29,17 @@ The `conversationEvents` client service survived the same migration as the live 
 ## Follow-up: apiProxy service adapter
 
 The server-side `apiProxy` service survived as the session-controller Remote surface. The session-controller plugin now provides the old service name backed by an adapter that mirrors the old `sessions.models` contract (same RPC envelope, `resolveAgent` for session lookup, `selectionFor` for the current selection, `buildModelCatalog` for groups and failures, `routableProviders` for the routable flag). Only `sessions.models` is bridged — the verb the installed bundles consume; unbridged verbs surface as loud missing-method errors rather than silent wrong answers. Same removal condition as the seed key.
+
+## Alternatives considered
+
+**Reimplement a fork-local `@deepseek-ai/dsh-client-runtime` package.** A compat package would answer any require of the removed module, but the installed-bundle sweep found the consumed surface is two symbols that `dsh-client-store` already exports, so a new shared module (its own publish, lint, and supply-chain surface) buys nothing the seed alias does not.
+
+**Leave pre-removal bundles pending until their publishers rebuild.** Doing nothing keeps `web-ui-remote-web-ui`, `web-ui-task-board`, and `dsh-hud` disabled and every bundle that requires the old specifier or injects the old service names unloadable — accurate, but it blocks this deployment's UI on third-party release schedules for identifiers whose surviving surface is intact and bridged in one line each.
+
+**Re-add the whole removed `apiProxy` surface.** Mirroring every verb of the dissolved service would preserve full API compatibility; the note rejects it because only `sessions.models` is consumed and silent wrong answers for unbridged verbs are worse than loud ones, so the adapter bridges exactly the consumed verb.
+
+## Consequences
+
+The cost: the frozen module table now carries a key that names no package, and the profile keeps disabled entries whose return depends on bridges landing — each with a removal condition that requires re-sweeping installed bundles before deletion. Unbridged verbs of a compat name fail loudly rather than answering, which surfaces as errors from old bundles until a verb is bridged on purpose.
+
+What it bought: prebuilt plugin bundles load unchanged against the renamed runtime, the conversation registry and the session-models surface answer their old names, and the services the 2026-08 merge dissolved are reachable again one consumed verb at a time — with the `satisfies` pin and per-bridge removal conditions keeping the seam deletable rather than permanent.

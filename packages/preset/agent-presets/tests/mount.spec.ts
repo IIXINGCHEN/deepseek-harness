@@ -1,20 +1,23 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import Loader from '@deepseek-ai/cordis-plugin-loader'
-import Include from '@deepseek-ai/cordis-plugin-include'
+import Loader, { isJsExpr } from '@deepseek-ai/cordis-plugin-loader'
+import Include, { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import Group from '@deepseek-ai/cordis-plugin-group'
+import { Config as PresentationConfig } from '@deepseek-ai/dsh-agent-tool-presentation'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { assembleContextFor, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import { load } from 'js-yaml'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentPresets, {
-  COMPOSITION_FILE, leakedServices, livePresetMounts, mountPreset, PresetMountError, serviceForAgent,
+  COMPOSITION_FILE, leakedServices, livePresetMounts, mountPreset, PresetMountError, serviceForAgent, SHIPPED_PRESET_ROOT,
 } from '@deepseek-ai/dsh-agent-presets'
 import type { Config } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
@@ -352,6 +355,30 @@ describe('the preset roster', () => {
   it('exposes the configured default id', () => {
     expect(ctx.agentPresets.defaultId).toBe('standard')
   })
+
+  it('resolves sessions recorded under the pre-rename PTC id to the renamed preset', async () => {
+    const shipped = await harness({ default: 'standard', roots: ROOTS, includeShippedRoot: true, includeUserRoot: false })
+    expect((await shipped.agentPresets.resolve('code')).id).toBe('ptc')
+  })
+
+  it('prefers a root-supplied preset over the legacy id translation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-preset-legacy-'))
+    await mkdir(join(root, 'code'))
+    await writeFile(join(root, 'code', COMPOSITION_FILE), '- id: ptc\n  name: @deepseek-ai/dsh-base\n')
+    try {
+      const custom = await harness({
+        default: 'standard', roots: [...ROOTS, { path: root, trust: 'user' as const }],
+        includeShippedRoot: true, includeUserRoot: false,
+      })
+      expect((await custom.agentPresets.resolve('code')).id).toBe('code')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still refuses a legacy id when its renamed preset is absent', async () => {
+    await expect(ctx.agentPresets.resolve('code')).rejects.toThrow(/^agent-presets: preset "code" not found/)
+  })
 })
 
 describe('composing from a broken preset', () => {
@@ -484,6 +511,59 @@ describe('attributing a service to a subtree', () => {
     // A disposed subtree owns nothing, so it can never be blamed for a service
     // some other subtree published under the same name afterwards.
     expect(leakedServices(ctx, mount!.fiber)).toEqual([])
+  })
+})
+
+describe('a shipped preset against the plugin schemas it configures', () => {
+  const PRESENTATION_PLUGIN = '@deepseek-ai/dsh-agent-tool-presentation'
+
+  /**
+   * Whether any value anywhere in `value` is an unevaluated `!!js` node.
+   * Such a value only the loader context can decide, so a config carrying one
+   * is not statically validatable.
+   */
+  function hasJsExpr(value: unknown): boolean {
+    if (isJsExpr(value)) return true
+    if (Array.isArray(value)) return value.some(entry => hasJsExpr(entry))
+    if (value !== null && typeof value === 'object') return Object.values(value).some(entry => hasJsExpr(entry))
+    return false
+  }
+
+  /** Presentation rows anywhere in one composition, recursing into group rows. */
+  function presentationRows(rows: readonly unknown[]): Array<{ config: unknown }> {
+    const found: Array<{ config: unknown }> = []
+    for (const entry of rows) {
+      const row = entry as { name?: unknown; group?: unknown; config?: unknown }
+      if (row.group === true && Array.isArray(row.config)) {
+        found.push(...presentationRows(row.config))
+      } else if (row.name === PRESENTATION_PLUGIN && row.config !== undefined && !hasJsExpr(row.config)) {
+        found.push(row as { config: unknown })
+      }
+    }
+    return found
+  }
+
+  it('writes tool-presentation configs the plugin schema accepts', async () => {
+    const carrying: string[] = []
+    for (const id of (await readdir(SHIPPED_PRESET_ROOT)).sort()) {
+      const path = join(SHIPPED_PRESET_ROOT, id, COMPOSITION_FILE)
+      // A directory without a composition is not a preset.
+      if (!existsSync(path)) continue
+      const rows = load(await readFile(path, 'utf8'), { schema: entryListSchema }) as unknown[]
+      for (const row of presentationRows(rows)) {
+        carrying.push(id)
+        // The mode enum lives in the plugin, not the preset: a rename that
+        // edits the preset's value without the schema bricks the preset at
+        // mount, found only by a session whose mode switch fails. Validate
+        // with the plugin's own schema — the same check the applying fiber
+        // runs — so the drift surfaces in this suite instead. The cast names
+        // exactly what the run proves: untrusted file data meeting the schema.
+        expect(() => PresentationConfig(row.config as Parameters<typeof PresentationConfig>[0]), `preset "${id}"`).not.toThrow()
+      }
+    }
+    // The suite must stay non-vacuous: the PTC preset exists to select the
+    // presentation mode, so it is the one preset that must keep carrying the row.
+    expect(carrying).toContain('ptc')
   })
 })
 
