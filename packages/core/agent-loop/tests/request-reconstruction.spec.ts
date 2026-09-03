@@ -361,7 +361,7 @@ describe('request stability across the loop', () => {
       ['first-provider', firstAdapter],
       ['second-provider', secondAdapter],
     ])
-    const agent = ctx.agentLoop.create(SessionId('effort-route-switch'), {
+    const agent = await ctx.agentLoop.create(SessionId('effort-route-switch'), {
       provider: 'first-provider',
       model: 'first-model',
     })
@@ -379,7 +379,7 @@ describe('request stability across the loop', () => {
 
     expect(firstAdapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('off'))
     expect(secondAdapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('high'))
-    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    const headers = agent.session.snapshotEvents().filter(event => event.type === 'request/header')
     expect(headers.map(event => event.data.header.config.reasoningEffort)).toEqual([
       ReasoningEffortId('off'),
       ReasoningEffortId('high'),
@@ -395,7 +395,7 @@ describe('request stability across the loop', () => {
       defaultEffort: ReasoningEffortId('high'),
     })
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('effort-unsupported'), {
+    const agent = await ctx.agentLoop.create(SessionId('effort-unsupported'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -415,7 +415,7 @@ describe('request stability across the loop', () => {
       ReasoningEffortId('high'),
       ReasoningEffortId('high'),
     ])
-    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    const headers = agent.session.snapshotEvents().filter(event => event.type === 'request/header')
     expect(headers).toHaveLength(1)
     expect(headers[0]?.data.header.config.reasoningEffort).toBe(ReasoningEffortId('high'))
     expect(headers[0]?.data.header.adapterDefaults?.reasoningEffort).toBe(true)
@@ -431,7 +431,7 @@ describe('request stability across the loop', () => {
       defaultEffort: ReasoningEffortId('high'),
     })
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('effort-drift'), {
+    const agent = await ctx.agentLoop.create(SessionId('effort-drift'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -452,7 +452,7 @@ describe('request stability across the loop', () => {
       ReasoningEffortId('off'),
       ReasoningEffortId('high'),
     ])
-    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    const headers = agent.session.snapshotEvents().filter(event => event.type === 'request/header')
     expect(headers).toHaveLength(2)
     expect(headers.map(event => event.data.header.config.reasoningEffort)).toEqual([
       ReasoningEffortId('off'),

@@ -31,7 +31,7 @@ describe('tool scheduler guard', () => {
     await ctx.plugin(AgentLoop, { agents: [] })
     ctx.llm.registerAdapter(['mock'], adapter)
 
-    const agent = ctx.agentLoop.create(SessionId('scheduler-guard'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('scheduler-guard'), { provider: 'mock', model: 'mock' })
     // The incident shape: the service is live and enumerable, but the
     // symbol-keyed scheduler view is missing from the registry instance.
     // oxlint-disable-next-line typescript/no-dynamic-delete -- incident fixture: drop the symbol-keyed view the guard must detect
@@ -45,7 +45,7 @@ describe('tool scheduler guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'run the tool' }], source: { kind: 'user' } }))
     await idle
 
-    expect(agent.session.events.findLast(event => event.type === 'turn/end')?.data.reason).toMatchObject({
+    expect(agent.session.snapshotEvents().findLast(event => event.type === 'turn/end')?.data.reason).toMatchObject({
       kind: 'error',
       error: { message: SCHEDULER_UNAVAILABLE_MESSAGE },
     })
