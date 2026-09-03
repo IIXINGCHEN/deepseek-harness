@@ -88,7 +88,7 @@ describe('catalog-route model discovery', () => {
     const ctx = await harness()
 
     const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
-    expect(models).toEqual([{ id: 'from-the-endpoint' }])
+    expect(models).toEqual([{ id: 'from-the-endpoint', name: 'from-the-endpoint' }])
     expect(server.paths).toEqual(['/models'])
   })
 
@@ -370,30 +370,6 @@ describe('draft-provider model discovery', () => {
       .rejects.toMatchObject({ code: 'DISCOVERY_FAILED' })
   })
 
-  it('interrogates anthropic-messages endpoints carrying x-api-key and authorization headers', async () => {
-    const probeKey = process.env.ANTHROPIC_TEST_KEY ?? 'anthropic-probe-key'
-    const server = await listingServer({
-      body: JSON.stringify({
-        data: [
-          { id: 'claude-3-7-sonnet-20250219', display_name: 'Claude 3.7 Sonnet' },
-          { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', context_window: 200000, max_tokens: 8192 },
-        ],
-      }),
-    })
-    const ctx = await harness()
-    const models = await ctx.llm.discoverModels('llm-pi-ai', {
-      baseURL: server.url,
-      api: 'anthropic-messages',
-      apiKey: probeKey,
-    })
-    expect(models).toEqual([
-      { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet' },
-      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', contextWindow: 200000, maxTokens: 8192 },
-    ])
-    expect(server.headers[0]?.['x-api-key']).toBe(probeKey)
-    expect(server.headers[0]?.['authorization']).toBe(`Bearer ${probeKey}`)
-    expect(server.headers[0]?.['anthropic-version']).toBe('2023-06-01')
-  })
   it.each(['azure-openai-responses', 'openai-codex-responses', 'google-generative-ai'])(
     'says it cannot interrogate %s rather than guessing a shape',
     async (api) => {

@@ -314,21 +314,13 @@ export async function discoverModels(
   const stored = storedProfile?.()
   const supplied = request.apiKey ?? await stored?.resolveApiKey()
   const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
-  // Dual-header authentication: Anthropic native endpoints require `x-api-key` and
-  // `anthropic-version`, while reverse proxies / gateways (CPA, OneAPI, LiteLLM) often
-  // accept standard `Bearer` tokens on their `/models` endpoint.
   const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
   headers.set('accept', 'application/json')
-  if (apiKey !== undefined) {
-    if (api === 'anthropic-messages') {
-      headers.set('x-api-key', apiKey)
-      headers.set('authorization', `Bearer ${apiKey}`)
-      headers.set('anthropic-version', ANTHROPIC_VERSION)
-    } else {
-      headers.set('authorization', `Bearer ${apiKey}`)
-    }
-  } else if (api === 'anthropic-messages') {
+  if (api === 'anthropic-messages') {
     headers.set('anthropic-version', ANTHROPIC_VERSION)
+    if (apiKey !== undefined) headers.set('x-api-key', apiKey)
+  } else if (apiKey !== undefined) {
+    headers.set('authorization', `Bearer ${apiKey}`)
   }
   for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
   let response: Response
