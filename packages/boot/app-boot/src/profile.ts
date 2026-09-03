@@ -16,13 +16,20 @@
  * first from the dsh installation (the launcher's own package), then from the
  * profile directory. Pnpm-managed entries in the profile's `node_modules`
  * resolve first. Dsh-owned links add packages carried only by selected
- * bundles, while `$DSH_HOME/profiles/node_modules` supplies the installation
- * dependency closure through Node's ordinary parent-walk. Plain Node uses
- * symlinks for that shared fallback; packaged executables use ESM proxies so
- * external plugins retain the installation's module instances.
+ * bundles, while the profile's installation-generation directory
+ * (`<profile>/.dsh-generations/<generation id>/`) supplies the installation
+ * dependency closure through Node's ordinary parent-walk: the composed tree's
+ * root config lives in that directory, so its `baseUrl` — and with it every
+ * bundle row, user-patch row, and agent-preset row — resolves
+ * installation-first, then profile-local. One generation directory per
+ * installation anchor means two dsh installations sharing a Harness home can
+ * never rewrite each other's dependency closure. Plain Node uses symlinks for
+ * the closure; packaged executables use ESM proxies so external plugins
+ * retain the installation's module instances.
  * @module @deepseek-ai/dsh-app-boot/profile
  */
 
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import {
   existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync,
@@ -39,6 +46,9 @@ import { loadOverlayPatches } from './index.ts'
 
 /** Directory under the Harness home holding every profile. */
 export const PROFILES_DIR = 'profiles'
+
+/** Directory inside a profile holding one installation generation's composed tree. */
+export const PROFILE_GENERATIONS_DIR = '.dsh-generations'
 
 /** The user patch layer inside a profile directory (hot-reloaded on long-lived surfaces). */
 export const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
@@ -126,11 +136,52 @@ export interface Profile {
  */
 export function resolveProfileDir(name: string, home: string = resolveDshHome()): string {
   if (name === '' || name.includes('/') || name.includes('\\') || name === '.' || name === '..'
-    // The launcher-maintained flat module fallback lives at this sibling path.
+    // A profile directory named like a modules directory would sit on the
+    // parent walk of everything beside it.
     || name === 'node_modules') {
     throw new Error(`dsh: invalid profile name ${JSON.stringify(name)}`)
   }
   return join(home, PROFILES_DIR, name)
+}
+
+/**
+ * The installation generation id: a stable directory-name-safe identity of
+ * the running dsh installation. Canonicalizing the installation anchor
+ * through the filesystem means one checkout or installed package maps to one
+ * id regardless of how the launcher was invoked (drive-letter case and
+ * separators included), while two installations — two checkouts, or a
+ * checkout beside a published install — map to two ids and therefore two
+ * isolated generation directories.
+ * @param installAnchor - absolute package.json path of the running dsh installation.
+ * @returns the generation id (a slug of the installation directory plus a short content hash).
+ */
+export function installationGenerationId(installAnchor: string): string {
+  let canonical: string
+  try {
+    canonical = realpathSync.native(dirname(installAnchor))
+  } catch {
+    // An anchor whose parent cannot be realpathed (a packaged virtual path)
+    // still needs a stable id; the resolved path is the next-best canonical form.
+    canonical = resolve(dirname(installAnchor))
+  }
+  const slug = basename(canonical).replace(/[^A-Za-z0-9._-]+/g, '-') || 'installation'
+  const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 12)
+  return `${slug}-${hash}`
+}
+
+/**
+ * The installation-generation directory of one profile: where the composed
+ * tree's root config and the installation dependency closure live. Everything
+ * that resolves from the composed tree — bundle rows, user-patch rows, and
+ * agent-preset rows — anchors `baseUrl` here, so one profile accumulates one
+ * directory per dsh installation that ever ran it, and no installation can
+ * rewrite another's dependency closure.
+ * @param profile - the loaded profile.
+ * @param installAnchor - absolute package.json path of the running dsh installation.
+ * @returns the absolute generation directory (which may not exist yet).
+ */
+export function profileGenerationDir(profile: Profile, installAnchor: string): string {
+  return join(profile.dir, PROFILE_GENERATIONS_DIR, installationGenerationId(installAnchor))
 }
 
 /** The shipped profile templates auto-initialized on first use, by name. */
@@ -335,12 +386,26 @@ interface ModuleProxyManifest {
   private: true
   type: 'module'
   exports: Record<string, string>
-  dsh: { moduleFallback: { targets: Record<string, string> } }
+  /**
+   * `moduleFallback` owns the proxy mechanics; `client` is the source
+   * package's `dsh.client` declaration copied verbatim so the browser-roster
+   * scanner, which reads the manifest nearest to the resolved row, still sees
+   * the dual-face metadata the real package declares.
+   */
+  dsh: { moduleFallback: { targets: Record<string, string> }; client?: unknown }
 }
 
 interface ModuleProxyRecord {
   version?: unknown
-  dsh?: { moduleFallback?: { targets?: unknown } }
+  dsh?: { moduleFallback?: { targets?: unknown }; client?: unknown }
+}
+
+/** Compare an on-disk proxy's copied `dsh.client` against the source package's. */
+function moduleProxyClientEqual(
+  existingDsh: NonNullable<ModuleProxyRecord['dsh']>,
+  client: unknown,
+): boolean {
+  return JSON.stringify(existingDsh.client) === JSON.stringify(client === undefined ? undefined : client)
 }
 
 /** Return whether the process reads application modules from pkg's virtual filesystem. */
@@ -379,9 +444,10 @@ function packageEntryFromPackage(
 function packageProxySource(
   packageName: string,
   packageDir: string,
-): { version: string; targets: Record<string, string> } {
+): { version: string; targets: Record<string, string>; client?: unknown } {
   const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as {
     bin?: unknown
+    dsh?: { client?: unknown }
     exports?: unknown
     main?: unknown
     types?: unknown
@@ -391,17 +457,20 @@ function packageProxySource(
   if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
     throw new Error(`dsh: installed package ${packageName} must declare a non-empty version`)
   }
+  const client = manifest.dsh && typeof manifest.dsh === 'object'
+    ? manifest.dsh.client
+    : undefined
   const declared = manifest.exports
   if (declared === undefined) {
     const main = typeof manifest.main === 'string' && manifest.main.length > 0 ? manifest.main : undefined
     const entry = join(packageDir, main ?? 'index')
     try {
       const resolved = createRequire(join(packageDir, 'package.json')).resolve(entry)
-      return { version: manifest.version, targets: { '.': pathToFileURL(resolved).href } }
+      return { version: manifest.version, targets: { '.': pathToFileURL(resolved).href }, client }
     } catch (error) {
       if (main === undefined
         && (manifest.bin !== undefined || manifest.types !== undefined || manifest.typings !== undefined)) {
-        return { version: manifest.version, targets: {} }
+        return { version: manifest.version, targets: {}, client }
       }
       throw new Error(`dsh: installed package ${packageName} main entry is missing at ${entry}`, { cause: error })
     }
@@ -422,7 +491,7 @@ function packageProxySource(
     )
     if (target !== undefined) targets[subpath] = target
   }
-  return { version: manifest.version, targets }
+  return { version: manifest.version, targets, client }
 }
 
 /**
@@ -436,6 +505,7 @@ function ensureModuleProxy(
   packageName: string,
   version: string,
   targets: Record<string, string>,
+  client?: unknown,
 ): void {
   const proxyExports = Object.fromEntries(
     Object.keys(targets).map((subpath, index) => [subpath, `./entry-${index}.js`]),
@@ -446,7 +516,10 @@ function ensureModuleProxy(
     private: true,
     type: 'module',
     exports: proxyExports,
-    dsh: { moduleFallback: { targets } },
+    dsh: {
+      moduleFallback: { targets },
+      ...(client === undefined ? {} : { client }),
+    },
   }
   let stat
   try {
@@ -465,6 +538,7 @@ function ensureModuleProxy(
     }
     if (existing.version === version
       && JSON.stringify(existing.dsh.moduleFallback.targets) === JSON.stringify(targets)
+      && moduleProxyClientEqual(existing.dsh, client)
       && Object.keys(targets).every((_, index) => existsSync(join(link, `entry-${index}.js`)))) return
     rmSync(link, { recursive: true })
   }
@@ -481,7 +555,7 @@ function ensureModuleProxy(
 
 type ModuleFallbackEntry =
   | { kind: 'symlink'; packageName: string; packageDir: string }
-  | { kind: 'proxy'; packageName: string; version: string; targets: Record<string, string> }
+  | { kind: 'proxy'; packageName: string; version: string; targets: Record<string, string>; client?: unknown }
 
 /** Read one package manifest used while traversing a module-fallback dependency graph. */
 function readModuleFallbackManifest(anchor: string): ProfileManifest {
@@ -526,7 +600,13 @@ function resolveModuleFallbackEntries(
       const source = packageProxySource(packageName, packageDir)
       return Object.keys(source.targets).length === 0
         ? []
-        : [{ kind: 'proxy' as const, packageName, version: source.version, targets: source.targets }]
+        : [{
+          kind: 'proxy' as const,
+          packageName,
+          version: source.version,
+          targets: source.targets,
+          ...(source.client === undefined ? {} : { client: source.client }),
+        }]
     })
   return { entries, packageNames: new Set(links.keys()) }
 }
@@ -537,12 +617,14 @@ function moduleFallbackEntryCurrent(modulesDir: string, entry: ModuleFallbackEnt
   try {
     const stat = lstatSync(link)
     if (entry.kind === 'symlink') {
-      return stat.isSymbolicLink() && readlinkSync(link) === entry.packageDir
+      return stat.isSymbolicLink() && symlinkPointsTo(link, entry.packageDir)
     }
     if (!stat.isDirectory()) return false
     const existing = readModuleProxyRecord(link)
     return existing?.version === entry.version
       && JSON.stringify(existing.dsh?.moduleFallback?.targets) === JSON.stringify(entry.targets)
+      && (existing.dsh === undefined
+        || moduleProxyClientEqual(existing.dsh, entry.client))
       && Object.keys(entry.targets).every((_, index) => existsSync(join(link, `entry-${index}.js`)))
   } catch {
     return false
@@ -558,28 +640,28 @@ function moduleFallbackCurrent(modulesDir: string, entries: readonly ModuleFallb
 export interface ProfileModuleFallbackOptions {
   /** Absolute package.json path of the running dsh installation. */
   installAnchor: string
-  /** Loaded profile whose selected bundles may carry profile-local plugins. */
-  profile?: Profile
-  /** Harness home; defaults to {@link resolveDshHome}. */
-  home?: string
+  /** Loaded profile whose generation directory receives the closure links and whose selected bundles may carry profile-local plugins. */
+  profile: Profile
 }
 
 /**
- * Maintain module fallbacks for one profile launch. The shared
- * `$DSH_HOME/profiles/node_modules` mirrors the dsh installation dependency
- * closure. Plain Node writes symlinks; a packaged executable writes ESM
- * proxies under a cross-process lock because operating-system links cannot
- * enter pkg's virtual filesystem. Missing packages carried only by selected
- * bundles are linked through a profile-owned directory into that profile's
- * `node_modules`; pnpm-managed entries remain authoritative, and another
- * profile's links cannot change its resolution.
- * @param options - installation anchor, optional loaded profile, and Harness home.
- * @returns settlement after the shared fallback and profile-local links are current.
+ * Maintain module fallbacks for one profile launch. The profile's
+ * installation-generation directory mirrors the dsh installation dependency
+ * closure under `<profile>/.dsh-generations/<generation id>/node_modules`,
+ * where the composed tree's `baseUrl` anchors: the closure is therefore
+ * per profile and per installation, and two dsh installations sharing a
+ * Harness home can never rewrite each other's links. Plain Node writes
+ * symlinks; a packaged executable writes ESM proxies under a cross-process
+ * lock because operating-system links cannot enter pkg's virtual filesystem.
+ * Missing packages carried only by selected bundles are linked through a
+ * profile-owned directory into that profile's `node_modules`; pnpm-managed
+ * entries remain authoritative, and another profile's links cannot change its
+ * resolution.
+ * @param options - installation anchor and loaded profile.
  */
 export async function healProfilesModuleFallback(options: ProfileModuleFallbackOptions): Promise<void> {
-  const { installAnchor, profile, home = resolveDshHome() } = options
-  const profilesDir = join(home, PROFILES_DIR)
-  const modulesDir = join(profilesDir, 'node_modules')
+  const { installAnchor, profile } = options
+  const modulesDir = join(profileGenerationDir(profile, installAnchor), 'node_modules')
   mkdirSync(modulesDir, { recursive: true })
   const { entries, packageNames } = resolveModuleFallbackEntries(installAnchor)
   if (!moduleFallbackCurrent(modulesDir, entries)) {
@@ -588,7 +670,7 @@ export async function healProfilesModuleFallback(options: ProfileModuleFallbackO
       return Promise.resolve()
     })
   }
-  if (profile !== undefined) healProfileModuleFallback(profile, packageNames)
+  healProfileModuleFallback(profile, packageNames)
 }
 
 /** Heal one module-fallback generation while the cross-process writer lock is held. */
@@ -597,7 +679,7 @@ function healProfilesModuleFallbackLocked(entries: readonly ModuleFallbackEntry[
     const link = join(modulesDir, entry.packageName)
     mkdirSync(dirname(link), { recursive: true })
     if (entry.kind === 'proxy') {
-      ensureModuleProxy(link, entry.packageName, entry.version, entry.targets)
+      ensureModuleProxy(link, entry.packageName, entry.version, entry.targets, entry.client)
     } else {
       ensureSymlink(link, entry.packageDir)
     }

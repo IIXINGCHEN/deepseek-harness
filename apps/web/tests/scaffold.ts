@@ -54,6 +54,7 @@ import {
   composeEntries,
   healProfilesModuleFallback,
   loadOverlayPatches,
+  profileGenerationDir,
   type Profile,
 } from '@deepseek-ai/dsh-app-boot'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -590,25 +591,27 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
         patches: [],
       }
     }))
-    // Mirror the production launcher: the shared installation closure keeps
-    // its carrier-specific fallback, while private bundle dependencies stay
-    // isolated to this synthetic scaffold profile.
-    await healProfilesModuleFallback({
-      installAnchor: INSTALL_ANCHOR,
-      home: harnessHome,
-      profile: {
-        name: 'scaffold',
-        dir: profileDir,
-        layers: extraLayers,
-        patchPath: join(profileDir, 'cordis.patch.yml'),
-        patches: [],
-        patchReload: 'startup',
-      },
-    })
+    // Mirror the production launcher: the profile's installation-generation
+    // directory carries the running installation's dependency closure, while
+    // private bundle dependencies stay isolated to this synthetic scaffold
+    // profile.
+    const scaffoldProfile: Profile = {
+      name: 'scaffold',
+      dir: profileDir,
+      layers: extraLayers,
+      patchPath: join(profileDir, 'cordis.patch.yml'),
+      patches: [],
+      patchReload: 'startup',
+    }
+    await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR, profile: scaffoldProfile })
     await mkdir(profileDir, { recursive: true })
-    const rootConfig = join(profileDir, 'cordis.yml')
+    // The empty root lives in the installation-generation directory, so bare
+    // plugin rows resolve through that generation's closure — the anchoring
+    // prepareProfile gives the production boot.
+    const generationDir = profileGenerationDir(scaffoldProfile, INSTALL_ANCHOR)
+    const rootConfig = join(generationDir, 'cordis.yml')
     await writeFile(rootConfig, '[]\n')
-    ctx.baseUrl = pathToFileURL(profileDir).href + '/'
+    ctx.baseUrl = pathToFileURL(generationDir).href + '/'
     // This direct Loader harness supplies the same root-path capability as app-boot.
     ctx.provide('dshHomePath', dshHomePath)
     // A host with no command line still provides one: the web bundle's startup

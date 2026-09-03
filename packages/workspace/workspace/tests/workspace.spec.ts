@@ -204,7 +204,7 @@ describe('WorkspaceRegistry lifecycle and bootstrap', () => {
     const newer = await makeDir('newer')
     const alias = join(base, 'older-link')
     const plain = join(base, 'plain.txt')
-    await symlink(older, alias)
+    await symlink(older, alias, 'junction')
     await writeFile(plain, 'not a directory')
     const missing = join(base, 'missing')
     const result = await harness({
@@ -356,7 +356,7 @@ describe('WorkspaceRegistry create and lookup', () => {
     const firstDir = await makeDir('first')
     const secondDir = await makeDir('second')
     const alias = join(base, 'first-link')
-    await symlink(firstDir, alias)
+    await symlink(firstDir, alias, 'junction')
     const { registry, pool } = await harness()
     const first = await registry.create(firstDir, 'Original')
     const second = await registry.create(secondDir)
@@ -390,6 +390,14 @@ describe('WorkspaceRegistry create and lookup', () => {
     expect(first.title).toBe('Shared')
     expect(second.title).toBe('Shared')
     expect(registry.list()).toEqual([second, first])
+  })
+
+  it('creates and resolves a workspace for user home directory path', async () => {
+    const { registry } = await harness()
+    const home = await registry.create('~')
+    expect(home.path).toBeTruthy()
+    expect(home.title).toBeTruthy()
+    expect(await registry.resolveByPath('~')).toBe(home)
   })
 
   it('rejects nonexistent and non-directory paths without changing order', async () => {

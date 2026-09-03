@@ -1,7 +1,7 @@
 /** Behavior of the browse backend over a real temporary directory tree. */
 
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -48,7 +48,7 @@ describe('BrowseDirectoryPicker', () => {
   it('lists directories only, flags hidden rows, follows symlinks, skips broken links, sorts by name', async () => {
     const listing = await capability.list(root)
     expect(listing.path).toBe(root)
-    expect(listing.home).toBe(homedir())
+    expect(listing.home).toBe(process.cwd())
     expect(listing.entries.map(entry => entry.name)).toEqual(['.hidden-dir', 'linked', 'projects'])
     expect(listing.entries.map(entry => entry.hidden)).toEqual([true, false, false])
     // Every entry path is absolute and host-joined — clients never join segments.
@@ -161,9 +161,9 @@ describe('BrowseDirectoryPicker', () => {
     expect(listing.crumbs[0]!.name).toBe(listing.crumbs[0]!.path)
   })
 
-  it('lists the home directory when no path is given', async () => {
+  it('lists the default root directory when no path is given', async () => {
     const listing = await capability.list()
-    expect(listing.path).toBe(homedir())
+    expect(listing.path).toBe(process.cwd())
   })
 
   it('throws directory-unreadable for a missing target', async () => {

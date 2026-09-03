@@ -7,6 +7,7 @@
 #   3. 六阶段全链路启动前健康自检 (环境/工作区/依赖/构建产物/WebProfile/端口)
 #   4. 服务生命周期管理 (启动/重启/停止/状态/交互式控制台/后台运行)
 #   5. 本地网络代理智能检测与配置 (支持 Clash/Mihomo/v2rayN/SS 等本地代理)
+#   6. 官方仓库更新同步 (update 选项: 提交预览/确认/--ff-only 快进/冲突即停/重建自检)
 #
 # 使用方法:
 #   powershell -ExecutionPolicy Bypass -File .\start-dsh.ps1 [Action] [Options]
@@ -20,6 +21,7 @@
 #   .\start-dsh.ps1 menu          # 打开交互式服务管理控制台
 #   .\start-dsh.ps1 check         # 仅执行全链路环境与项目自检 (不启动服务)
 #   .\start-dsh.ps1 install-deps  # 仅执行依赖检测与自动安装
+#   .\start-dsh.ps1 update        # 检查并同步官方仓库更新 (拉取+装依赖+重建+自检)
 #
 # 可选参数:
 #   -Port <N>          指定 Web 服务端口 (默认 3080)
@@ -31,6 +33,7 @@
 #   -NoOpen            启动后不自动在默认浏览器中打开页面
 #   -Dev               在独立窗口中启动 dev:web 客户端 HMR 监听器
 #   -SkipUpdate        跳过检查官方仓库更新
+#   -Update (-u)       批处理模式检查并同步官方仓库更新 (存在未提交修改时拒绝同步)
 #   -ForceBuild        强制重新执行 pnpm run build
 #   -AutoInstall       检测到依赖缺失时无需确认直接自动安装 (默认开启)
 # ==============================================================================
@@ -38,8 +41,8 @@
 [CmdletBinding(DefaultParameterSetName = 'Default')]
 param(
   [Parameter(Position = 0, ParameterSetName = 'Default')]
-  [ValidateSet('start', 'restart', 'stop', 'status', 'menu', 'exit', 'quit', 'check', 'install-deps',
-               '启动', '重启', '停止', '状态', '菜单', '退出', '自检', '安装依赖', IgnoreCase = $true)]
+  [ValidateSet('start', 'restart', 'stop', 'status', 'menu', 'exit', 'quit', 'check', 'update', 'install-deps',
+               '启动', '重启', '停止', '状态', '菜单', '退出', '自检', '更新', '安装依赖', IgnoreCase = $true)]
   [string]$Action = 'start',
 
   [Alias('s')]
@@ -59,6 +62,9 @@ param(
   [switch]$Exit,
 
   [switch]$Check,
+
+  [Alias('u')]
+  [switch]$Update,
 
   [switch]$InstallDeps,
 
@@ -89,7 +95,7 @@ try {
 } catch { }
 
 # 解析动作别名
-$actionSwitchCount = @($Start, $Restart, $Stop, $Status, $Menu, $Exit, $Check, $InstallDeps | Where-Object { $_ }).Count
+$actionSwitchCount = @($Start, $Restart, $Stop, $Status, $Menu, $Exit, $Check, $Update, $InstallDeps | Where-Object { $_ }).Count
 if ($actionSwitchCount -gt 1) {
   Write-Host '[start] 错误: 操作开关只能指定一个。' -ForegroundColor Red
   exit 1
@@ -101,6 +107,7 @@ if ($Status)      { $Action = 'status' }
 if ($Menu)        { $Action = 'menu' }
 if ($Exit)        { $Action = 'exit' }
 if ($Check)       { $Action = 'check' }
+if ($Update)      { $Action = 'update' }
 if ($InstallDeps) { $Action = 'install-deps' }
 
 # 标准化动作名称
@@ -113,6 +120,7 @@ switch ($Action.ToLower()) {
   '退出'     { $Action = 'exit' }
   'quit'     { $Action = 'exit' }
   '自检'     { $Action = 'check' }
+  '更新'     { $Action = 'update' }
   '安装依赖' { $Action = 'install-deps' }
 }
 
@@ -825,9 +833,9 @@ const rqRepo = createRequire(anchor)
 const missing = deps.filter(d => { try { rq.resolve(d); return false } catch { return true } })
 if (missing.length) { console.error('[start] web profile 依赖未正确安装: ' + missing.join(', ')); process.exit(1) }
 const boot = await import(pathToFileURL(repoRoot + '/packages/boot/app-boot/lib/index.js').href)
-await boot.healProfilesModuleFallback({ installAnchor: anchor })
 try {
   const loaded = boot.loadProfile('dsh', profile, anchor)
+  await boot.healProfilesModuleFallback({ installAnchor: anchor, profile: loaded })
   const seenEntries = new Map()
   for (const layer of loaded.layers) {
     for (const patch of layer.patches) {
@@ -958,12 +966,10 @@ catch (e) { console.error('[start] web profile bundles 预检失败: ' + e.messa
   Write-Host '====================================================' -ForegroundColor Green
 }
 
-# --- 操作 3: 启动服务 (Start) --------------------------------------------------
-function Start-DshService([switch]$RunInBackground) {
-  # 失败路径只置标志并返回，由主入口决定退出码；menu 场景停留控制台展示错误
-  $script:StartServiceFailed = $false
-
-  # 1. 本地网络代理检测与配置
+# --- 工具函数: 本地网络代理检测与配置 (Clash/Mihomo/v2rayN/SS 等本地代理) --------
+# 返回检测/指定的代理地址; 不使用代理时返回 $null。命中时写入进程级环境变量供
+# git/pnpm 等子进程继承; -NoProxy 显式禁用时清空既有代理环境变量。
+function Resolve-DshLocalProxy([string]$LogPrefix = 'start') {
   $configuredProxy = $null
   if (-not $NoProxy) {
     if ($Proxy) {
@@ -1001,7 +1007,7 @@ function Start-DshService([switch]$RunInBackground) {
     }
 
     if ($configuredProxy) {
-      Write-Host "[start] 已检测并启用本地代理: $configuredProxy" -ForegroundColor Cyan
+      Write-Host "[$LogPrefix] 已检测并启用本地代理: $configuredProxy" -ForegroundColor Cyan
       $env:HTTP_PROXY  = $configuredProxy
       $env:HTTPS_PROXY = $configuredProxy
       $env:ALL_PROXY   = $configuredProxy
@@ -1012,7 +1018,7 @@ function Start-DshService([switch]$RunInBackground) {
       $env:no_proxy    = 'localhost,127.0.0.1,::1'
     }
   } else {
-    Write-Host '[start] 已显式禁用代理。' -ForegroundColor Yellow
+    Write-Host "[$LogPrefix] 已显式禁用代理。" -ForegroundColor Yellow
     $env:HTTP_PROXY  = $null
     $env:HTTPS_PROXY = $null
     $env:ALL_PROXY   = $null
@@ -1020,6 +1026,81 @@ function Start-DshService([switch]$RunInBackground) {
     $env:https_proxy = $null
     $env:all_proxy   = $null
   }
+  return $configuredProxy
+}
+
+# --- 工具函数: 静默运行 git, 返回其退出码 ----------------------------------------
+# PowerShell 5.1 在 $ErrorActionPreference='Stop' 时, `2>&1` 会把 git 写到 stderr
+# 的进度行 (fetch 成功也会写 "From ...") 升级为终止异常, 成功路径被误判为失败。
+# 在函数局部作用域内把 EAP 降为 Continue (退出即恢复), 以 $LASTEXITCODE 为唯一成败依据。
+function Invoke-DshGitSilent {
+  $ErrorActionPreference = 'Continue'
+  & git @args 2>&1 | Out-Null
+  return $LASTEXITCODE
+}
+
+# --- 工具函数: 检查上游仓库更新状态 ---------------------------------------------
+# fetch 当前分支并与其上游分支比较; fetch 失败 (离线/网络受限) 返回 $null。
+# 远端选择: 当前分支的跟踪远端优先, 未跟踪时回退 upstream (官方仓库), 再回退 origin。
+# 返回: @{ Branch; TargetRemote; LocalRev; RemoteRev; BehindCount; AheadCount; GitProxyArgs }
+function Get-DshUpstreamUpdateState([string]$ProxyUrl) {
+  $currentBranch = (git branch --show-current 2>$null)
+  if ($currentBranch) { $currentBranch = $currentBranch.Trim() }
+  if (-not $currentBranch) { $currentBranch = 'master' }
+
+  $gitProxyArgs = @()
+  if ($ProxyUrl) {
+    $gitProxyArgs += @('-c', "http.proxy=$ProxyUrl", '-c', "https.proxy=$ProxyUrl")
+  }
+
+  $targetRemote = 'origin'
+  $trackingRemote = (git config --get "branch.$currentBranch.remote" 2>$null)
+  if ($trackingRemote) { $trackingRemote = $trackingRemote.Trim() }
+  $remotes = (git remote 2>$null)
+  if ($trackingRemote -and ($remotes -contains $trackingRemote)) {
+    $targetRemote = $trackingRemote
+  } elseif ($remotes -contains 'upstream') {
+    $targetRemote = 'upstream'
+  }
+
+  try {
+    $fetchRc = Invoke-DshGitSilent @gitProxyArgs fetch $targetRemote $currentBranch --prune
+  } catch {
+    return $null
+  }
+  if ($fetchRc -ne 0) { return $null }
+
+  $localRev = (git rev-parse HEAD 2>$null)
+  if ($localRev) { $localRev = $localRev.Trim() }
+  $remoteRev = (git rev-parse "$targetRemote/$currentBranch" 2>$null)
+  if ($remoteRev) { $remoteRev = $remoteRev.Trim() }
+
+  $behindCount = 0
+  $aheadCount = 0
+  if ($remoteRev) {
+    $behindCountRaw = (git rev-list --count "HEAD..$targetRemote/$currentBranch" 2>$null)
+    if ($behindCountRaw) { $behindCount = [int]$behindCountRaw.Trim() }
+    $aheadCountRaw = (git rev-list --count "$targetRemote/$currentBranch..HEAD" 2>$null)
+    if ($aheadCountRaw) { $aheadCount = [int]$aheadCountRaw.Trim() }
+  }
+  return @{
+    Branch = $currentBranch
+    TargetRemote = $targetRemote
+    LocalRev = $localRev
+    RemoteRev = $remoteRev
+    BehindCount = $behindCount
+    AheadCount = $aheadCount
+    GitProxyArgs = $gitProxyArgs
+  }
+}
+
+# --- 操作 3: 启动服务 (Start) --------------------------------------------------
+function Start-DshService([switch]$RunInBackground) {
+  # 失败路径只置标志并返回，由主入口决定退出码；menu 场景停留控制台展示错误
+  $script:StartServiceFailed = $false
+
+  # 1. 本地网络代理检测与配置
+  $configuredProxy = Resolve-DshLocalProxy
 
   # 2. 检查官方仓库更新并合并
   $needsBuild = $ForceBuild
@@ -1028,102 +1109,67 @@ function Start-DshService([switch]$RunInBackground) {
   if (-not $SkipUpdate) {
     if ($isGitRepo) {
       Write-Host '[start] 正在检查官方仓库是否有更新...' -ForegroundColor Cyan
-      $currentBranch = (git branch --show-current 2>$null)
-      if ($currentBranch) { $currentBranch = $currentBranch.Trim() }
-      if (-not $currentBranch) { $currentBranch = 'master' }
+      $upstream = Get-DshUpstreamUpdateState -ProxyUrl $configuredProxy
+      if ($null -eq $upstream) {
+        Write-Host "[start] 提示: 检查远端更新失败 (网络受限或离线)，跳过更新检测。" -ForegroundColor Yellow
+      } elseif ($upstream.RemoteRev -and ($upstream.LocalRev -ne $upstream.RemoteRev)) {
+        if ($upstream.BehindCount -gt 0 -and $upstream.AheadCount -gt 0) {
+          # 历史已分叉: 自动 rebase 会重写本地提交且大概率冲突, 只提示不自动操作
+          Write-Host "[start] 检测到 $($upstream.TargetRemote)/$($upstream.Branch) 有 $($upstream.BehindCount) 个新提交，但本地另有 $($upstream.AheadCount) 个独立提交（历史已分叉）；已跳过自动更新，如需同步请手动执行: git pull --rebase $($upstream.TargetRemote) $($upstream.Branch)" -ForegroundColor Yellow
+        } elseif ($upstream.BehindCount -gt 0) {
+          Write-Host "[start] 检测到仓库 ($($upstream.TargetRemote)) 有 $($upstream.BehindCount) 个新提交，开始拉取并合并更新..." -ForegroundColor Green
 
-      $gitProxyArgs = @()
-      if ($configuredProxy) {
-        $gitProxyArgs += @('-c', "http.proxy=$configuredProxy", '-c', "https.proxy=$configuredProxy")
-      }
+          $status = (git status --porcelain 2>$null)
+          $hasLocalChanges = [bool]($status -and $status.Trim().Length -gt 0)
+          $stashed = $false
 
-      $targetRemote = 'origin'
-      $trackingRemote = (git config --get "branch.$currentBranch.remote" 2>$null)
-      if ($trackingRemote) { $trackingRemote = $trackingRemote.Trim() }
-      $remotes = (git remote 2>$null)
-      if ($trackingRemote -and ($remotes -contains $trackingRemote)) {
-        $targetRemote = $trackingRemote
-      } elseif ($remotes -contains 'upstream') {
-        $targetRemote = 'upstream'
-      }
-
-      $fetchSuccess = $false
-      try {
-        & git @gitProxyArgs fetch $targetRemote $currentBranch --prune 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-          $fetchSuccess = $true
-        } else {
-          Write-Host "[start] 提示: 检查远端 ($targetRemote) 更新失败 (网络受限或离线)，跳过更新检测。" -ForegroundColor Yellow
-        }
-      } catch {
-        Write-Host "[start] 提示: 检查远端 ($targetRemote) 更新失败 (离线)，跳过更新检测。" -ForegroundColor Yellow
-      }
-
-      if ($fetchSuccess) {
-        $localRev = (git rev-parse HEAD 2>$null)
-        if ($localRev) { $localRev = $localRev.Trim() }
-        $remoteRev = (git rev-parse "$targetRemote/$currentBranch" 2>$null)
-        if ($remoteRev) { $remoteRev = $remoteRev.Trim() }
-
-        if ($remoteRev -and ($localRev -ne $remoteRev)) {
-          $behindCountRaw = (git rev-list --count "HEAD..$targetRemote/$currentBranch" 2>$null)
-          $behindCount = if ($behindCountRaw) { [int]$behindCountRaw.Trim() } else { 0 }
-
-          $aheadCountRaw = (git rev-list --count "$targetRemote/$currentBranch..HEAD" 2>$null)
-          $aheadCount = if ($aheadCountRaw) { [int]$aheadCountRaw.Trim() } else { 0 }
-
-          if ($behindCount -gt 0 -and $aheadCount -gt 0) {
-            # 历史已分叉: 自动 rebase 会重写本地提交且大概率冲突, 只提示不自动操作
-            Write-Host "[start] 检测到 $targetRemote/$currentBranch 有 $behindCount 个新提交，但本地另有 $aheadCount 个独立提交（历史已分叉）；已跳过自动更新，如需同步请手动执行: git pull --rebase $targetRemote $currentBranch" -ForegroundColor Yellow
-          } elseif ($behindCount -gt 0) {
-            Write-Host "[start] 检测到仓库 ($targetRemote) 有 $behindCount 个新提交，开始拉取并合并更新..." -ForegroundColor Green
-
-            $status = (git status --porcelain 2>$null)
-            $hasLocalChanges = [bool]($status -and $status.Trim().Length -gt 0)
-            $stashed = $false
-
-            if ($hasLocalChanges) {
-              Write-Host '[start] 检测到本地存在修改，正在暂存本地改动...' -ForegroundColor Cyan
-              git stash push -u -m "dsh-auto-stash-before-update" 2>&1 | Out-Null
-              $stashed = $true
-            }
-
-            # --ff-only 仅快进合并, 不重写本地提交; 分叉/冲突时直接失败且不产生中间状态
-            Write-Host "[start] 正在拉取远端 $targetRemote/$currentBranch 更新..." -ForegroundColor Cyan
-            & git @gitProxyArgs pull --ff-only $targetRemote $currentBranch
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host '[start] 错误: git pull --ff-only 更新失败（本地与远端无法快进合并）；请确认工作区状态后再启动。' -ForegroundColor Red
-              if ($stashed) {
-                Write-Host '[start] 正在恢复本地暂存的修改...' -ForegroundColor Cyan
-                git stash pop 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                  Write-Host '[start] 本地暂存修改已恢复。' -ForegroundColor Green
-                } else {
-                  Write-Host '[start] 提示: 恢复本地修改失败，改动仍保留在 git stash 中。' -ForegroundColor Yellow
-                }
-              }
+          if ($hasLocalChanges) {
+            Write-Host '[start] 检测到本地存在修改，正在暂存本地改动...' -ForegroundColor Cyan
+            $stashRc = Invoke-DshGitSilent stash push -u -m 'dsh-auto-stash-before-update'
+            if ($stashRc -ne 0) {
+              Write-Host '[start] 错误: 暂存本地修改失败；未做任何其他改动，请先手动处理工作区后再启动。' -ForegroundColor Red
               $script:StartServiceFailed = $true
               return
             }
+            $stashed = $true
+          }
 
+          # --ff-only 仅快进合并, 不重写本地提交; 分叉/冲突时直接失败且不产生中间状态
+          Write-Host "[start] 正在拉取远端 $($upstream.TargetRemote)/$($upstream.Branch) 更新..." -ForegroundColor Cyan
+          $gitProxyArgs = $upstream.GitProxyArgs
+          & git @gitProxyArgs pull --ff-only $upstream.TargetRemote $upstream.Branch
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '[start] 错误: git pull --ff-only 更新失败（本地与远端无法快进合并）；请确认工作区状态后再启动。' -ForegroundColor Red
             if ($stashed) {
               Write-Host '[start] 正在恢复本地暂存的修改...' -ForegroundColor Cyan
-              git stash pop 2>&1 | Out-Null
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host '[start] 错误: 恢复本地修改时存在冲突，已停止启动；请先解决工作区冲突。' -ForegroundColor Red
-                $script:StartServiceFailed = $true
-                return
+              $popRc = Invoke-DshGitSilent stash pop
+              if ($popRc -eq 0) {
+                Write-Host '[start] 本地暂存修改已恢复。' -ForegroundColor Green
+              } else {
+                Write-Host '[start] 提示: 恢复本地修改失败，改动仍保留在 git stash 中。' -ForegroundColor Yellow
               }
             }
-
-            Write-Host '[start] 代码更新与合并完成。' -ForegroundColor Green
-            $needsBuild = $true
-          } else {
-            Write-Host '[start] 当前代码已是最新版本。' -ForegroundColor Green
+            $script:StartServiceFailed = $true
+            return
           }
+
+          if ($stashed) {
+            Write-Host '[start] 正在恢复本地暂存的修改...' -ForegroundColor Cyan
+            $popRc = Invoke-DshGitSilent stash pop
+            if ($popRc -ne 0) {
+              Write-Host '[start] 错误: 恢复本地修改时存在冲突，已停止启动；请先解决工作区冲突。' -ForegroundColor Red
+              $script:StartServiceFailed = $true
+              return
+            }
+          }
+
+          Write-Host '[start] 代码更新与合并完成。' -ForegroundColor Green
+          $needsBuild = $true
         } else {
           Write-Host '[start] 当前代码已是最新版本。' -ForegroundColor Green
         }
+      } else {
+        Write-Host '[start] 当前代码已是最新版本。' -ForegroundColor Green
       }
     }
   }
@@ -1232,6 +1278,153 @@ function Restart-DshService([switch]$RunInBackground) {
   Start-DshService -RunInBackground:$RunInBackground
 }
 
+# --- 操作 6: 检查并同步官方更新 (Update) ----------------------------------------
+# 显式的更新维护动作, 与启动路径内嵌的静默同步互补: 每一步可见、可取消。
+# 流程: fetch 上游 → 展示新提交 → 确认(含未提交修改的处理) → --ff-only 拉取 →
+# 依赖安装/重建/全链路自检 → 询问重启。冲突与历史分叉一律停止并列出现场,
+# 不自动改写 —— 冲突解决需要判断哪边是对的, 自动策略可能静默破坏本地功能修改。
+function Invoke-DshOfficialUpdate([switch]$NonInteractive) {
+  $script:UpdateFailed = $false
+
+  if ((git rev-parse --is-inside-work-tree 2>$null) -ne 'true') {
+    Write-Host '[update] 错误: 当前目录不是 git 仓库，无法检查官方更新。' -ForegroundColor Red
+    $script:UpdateFailed = $true
+    return
+  }
+
+  $proxyUrl = Resolve-DshLocalProxy -LogPrefix 'update'
+  Write-Host '[update] 正在检查官方仓库是否有更新...' -ForegroundColor Cyan
+  $upstream = Get-DshUpstreamUpdateState -ProxyUrl $proxyUrl
+  if ($null -eq $upstream) {
+    Write-Host '[update] 提示: 检查远端更新失败 (网络受限或离线)，本次未同步。' -ForegroundColor Yellow
+    $script:UpdateFailed = $true
+    return
+  }
+  $remoteRef = "$($upstream.TargetRemote)/$($upstream.Branch)"
+  if (-not $upstream.RemoteRev -or $upstream.LocalRev -eq $upstream.RemoteRev) {
+    Write-Host '[update] 当前代码已是最新版本，无需同步。' -ForegroundColor Green
+    return
+  }
+  if ($upstream.BehindCount -le 0) {
+    Write-Host "[update] 本地领先于 $remoteRef（有待推送的提交），无需拉取。" -ForegroundColor Green
+    return
+  }
+  if ($upstream.AheadCount -gt 0) {
+    Write-Host "[update] 检测到 $remoteRef 有 $($upstream.BehindCount) 个新提交，但本地另有 $($upstream.AheadCount) 个独立提交（历史已分叉）。" -ForegroundColor Yellow
+    Write-Host "[update] 已跳过自动同步（避免重写本地提交）。请手动执行: git pull --rebase $($upstream.TargetRemote) $($upstream.Branch)" -ForegroundColor Yellow
+    $script:UpdateFailed = $true
+    return
+  }
+
+  # 展示即将拉取的提交, 先知情再决定
+  Write-Host ''
+  Write-Host "[update] $remoteRef 有 $($upstream.BehindCount) 个新提交:" -ForegroundColor Green
+  if ($upstream.BehindCount -gt 30) {
+    Write-Host '[update] （仅显示最近 30 条）' -ForegroundColor DarkGray
+  }
+  & git log --oneline -30 "HEAD..$remoteRef"
+  Write-Host ''
+
+  $status = (git status --porcelain 2>$null)
+  $hasLocalChanges = [bool]($status -and $status.Trim().Length -gt 0)
+
+  # 未提交修改的处理: 批处理模式拒绝同步; 交互模式列出现场由用户确认。
+  # 绝不静默 stash —— 恢复(stash pop)冲突是本地改动最危险的丢失点。
+  if ($NonInteractive) {
+    if ($hasLocalChanges) {
+      Write-Host '[update] 工作区存在未提交修改，批处理模式拒绝同步；请先提交或手动处理后重试:' -ForegroundColor Red
+      & git status --short
+      $script:UpdateFailed = $true
+      return
+    }
+  } elseif ($hasLocalChanges) {
+    Write-Host '[update] 工作区存在未提交修改:' -ForegroundColor Yellow
+    & git status --short
+    Write-Host ''
+    Write-Host '[update] 同步方式: 先暂存(stash)全部本地修改, 快进拉取后再恢复; 恢复冲突时会停在这里等待处理。' -ForegroundColor Yellow
+    $answer = Read-Host '是否继续同步? (y=继续 / n=取消)'
+    if ($answer -notmatch '^(y|Y|yes|是|好)') {
+      Write-Host '[update] 已取消，工作区未做任何修改。' -ForegroundColor Gray
+      return
+    }
+  } else {
+    $answer = Read-Host "确认拉取以上 $($upstream.BehindCount) 个提交? (y=拉取 / n=取消)"
+    if ($answer -notmatch '^(y|Y|yes|是|好)') {
+      Write-Host '[update] 已取消，工作区未做任何修改。' -ForegroundColor Gray
+      return
+    }
+  }
+
+  $stashed = $false
+  if ($hasLocalChanges) {
+    Write-Host '[update] 正在暂存本地修改...' -ForegroundColor Cyan
+    $stashRc = Invoke-DshGitSilent stash push -u -m 'dsh-auto-stash-before-update'
+    if ($stashRc -ne 0) {
+      Write-Host '[update] 错误: 暂存本地修改失败；未做任何其他改动，请先手动处理工作区。' -ForegroundColor Red
+      $script:UpdateFailed = $true
+      return
+    }
+    $stashed = $true
+  }
+
+  # --ff-only 仅快进合并, 不重写本地提交; 冲突时直接失败且不产生中间状态
+  Write-Host "[update] 正在拉取 $remoteRef 更新..." -ForegroundColor Cyan
+  $gitProxyArgs = $upstream.GitProxyArgs
+  & git @gitProxyArgs pull --ff-only $upstream.TargetRemote $upstream.Branch
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host '[update] 错误: git pull --ff-only 失败（本地与远端无法快进合并）。' -ForegroundColor Red
+    if ($stashed) {
+      Write-Host '[update] 正在恢复本地暂存的修改...' -ForegroundColor Cyan
+      $popRc = Invoke-DshGitSilent stash pop
+      if ($popRc -eq 0) {
+        Write-Host '[update] 本地暂存修改已恢复。' -ForegroundColor Green
+      } else {
+        Write-Host '[update] 提示: 恢复本地修改失败，改动仍保留在 git stash 中 (git stash list 查看)。' -ForegroundColor Yellow
+      }
+    }
+    Write-Host "[update] 请确认工作区状态后重试, 或手动执行: git pull --ff-only $($upstream.TargetRemote) $($upstream.Branch)" -ForegroundColor Yellow
+    $script:UpdateFailed = $true
+    return
+  }
+
+  if ($stashed) {
+    Write-Host '[update] 正在恢复本地暂存的修改...' -ForegroundColor Cyan
+    $popRc = Invoke-DshGitSilent stash pop
+    if ($popRc -ne 0) {
+      Write-Host '[update] 错误: 恢复本地修改时存在冲突，已停止。冲突文件:' -ForegroundColor Red
+      & git status --short
+      Write-Host '[update] 处理方式: 逐个解决冲突后 git add; 若要放弃恢复, git checkout -- . 后改动仍保留在 git stash 中。' -ForegroundColor Yellow
+      $script:UpdateFailed = $true
+      return
+    }
+  }
+
+  Write-Host '[update] 代码更新与合并完成。' -ForegroundColor Green
+
+  # 同步后的收尾: 依赖安装、构建产物重建与全链路自检 (与启动路径同一套自检)
+  Write-Host '[update] 正在执行依赖安装、重建与全链路自检...' -ForegroundColor Cyan
+  Invoke-DshSelfCheck -AutoFix -PerformBuild
+  if ($script:SelfCheckFailed) {
+    Write-Host '[update] 代码已同步, 但自检未通过; 请按上方条目处理后重跑本选项或选项 6。' -ForegroundColor Red
+    $script:UpdateFailed = $true
+    return
+  }
+  Write-Host '[update] 更新完成: 代码、依赖与构建产物均为最新, 自检通过。' -ForegroundColor Green
+
+  $svc = Get-DshServiceStatus $Port
+  if ($svc.IsRunning) {
+    if ($NonInteractive) {
+      Write-Host "[update] 提示: 服务正在运行 (PID $($svc.Pids -join ', '))，请执行 restart 以应用更新。" -ForegroundColor Yellow
+    } else {
+      $answer = Read-Host '服务正在运行，是否立即重启以应用更新? (y=重启 / n=稍后手动重启)'
+      if ($answer -match '^(y|Y|yes|是|好)') {
+        Restart-DshService -RunInBackground
+        if ($script:StartServiceFailed) { $script:UpdateFailed = $true }
+      }
+    }
+  }
+}
+
 # --- 操作 5: 交互式控制台菜单 (Menu) -------------------------------------------
 function Show-InteractiveMenu {
   while ($true) {
@@ -1259,10 +1452,11 @@ function Show-InteractiveMenu {
     Write-Host ' 5. 查看详细状态 (Status)' -ForegroundColor White
     Write-Host ' 6. 执行全链路健康自检 (Self-Check)' -ForegroundColor White
     Write-Host ' 7. 检测并安装系统前置依赖 (Install Prerequisites)' -ForegroundColor White
+    Write-Host ' 8. 检查并同步官方更新 (Update from Official Repo)' -ForegroundColor White
     Write-Host ' 0. 退出控制台 (Exit)' -ForegroundColor White
     Write-Host '====================================================' -ForegroundColor Cyan
 
-    $choice = Read-Host '请输入选项编号 [0-7]'
+    $choice = Read-Host '请输入选项编号 [0-8]'
     Write-Host ''
 
     switch ($choice.Trim()) {
@@ -1305,6 +1499,11 @@ function Show-InteractiveMenu {
         Write-Host ''
         Read-Host '按回车键返回菜单...'
       }
+      '8' {
+        Invoke-DshOfficialUpdate
+        Write-Host ''
+        Read-Host '按回车键返回菜单...'
+      }
       '0' {
         Write-Host '已退出服务管理。' -ForegroundColor Gray
         return
@@ -1318,7 +1517,7 @@ function Show-InteractiveMenu {
         return
       }
       default {
-        Write-Host '无效的输入，请输入 0-7 之间的数字。' -ForegroundColor Red
+        Write-Host '无效的输入，请输入 0-8 之间的数字。' -ForegroundColor Red
         Start-Sleep -Seconds 1
       }
     }
@@ -1345,13 +1544,17 @@ switch ($Action) {
     Ensure-DshPrerequisites
     if ($script:PrereqFailed) { exit 1 }
   }
+  'update'       {
+    Invoke-DshOfficialUpdate -NonInteractive
+    if ($script:UpdateFailed) { exit 1 }
+  }
   'menu'         { Show-InteractiveMenu }
   'exit'         {
     Write-Host '已退出。' -ForegroundColor Gray
     exit 0
   }
   default        {
-    Write-Host "未知操作: '$Action'。支持的操作: start, restart, stop, status, check, install-deps, menu, exit。" -ForegroundColor Red
+    Write-Host "未知操作: '$Action'。支持的操作: start, restart, stop, status, check, update, install-deps, menu, exit。" -ForegroundColor Red
     exit 1
   }
 }

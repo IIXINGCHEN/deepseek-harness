@@ -11,7 +11,7 @@
  * @module @deepseek-ai/dsh/profile-boot
  */
 
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
@@ -25,6 +25,7 @@ import {
   loadOptionalPatches,
   loadOverlayPatches,
   loadProfile,
+  profileGenerationDir,
   PROFILE_PATCH_FILENAME,
   watchUserPatches,
   type Profile,
@@ -79,7 +80,9 @@ const TELEMETRY_ROW_ID = 'session-telemetry-otel'
 /** The empty root entry list every profile tree patches over. */
 const PROFILE_ROOT_CONFIG = `# dsh profile root — an empty entry list. The tree is composed as patches:
 # each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any
-# --patch overlays. Edit cordis.patch.yml, not this file.
+# --patch overlays. Edit cordis.patch.yml, not this file. This copy lives in the
+# profile's installation-generation directory, where the composed tree's baseUrl
+# anchors, so every row resolves through that generation's dependency closure.
 []
 `
 
@@ -103,21 +106,26 @@ export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: b
 }
 
 /**
- * Load a resolved profile for `name` and (re)write the empty root config. The
- * root is always rewritten: the whole composition is patch layers, and the
- * vendored Loader's tree write-back (a plugin self-disposing persists the
- * current tree) can bake composed rows into this file — which would duplicate
- * every bundle insert on the next boot. The file exists on disk only because
- * the Loader needs a real include root to anchor `baseUrl` at the profile
- * directory (the config dump anchors on the same file, so both compose over
- * the identical base).
+ * Load a resolved profile for `name` and (re)write the empty root config into
+ * the profile's installation-generation directory. The root is always
+ * rewritten: the whole composition is patch layers, and the vendored Loader's
+ * tree write-back (a plugin self-disposing persists the current tree) can
+ * bake composed rows into this file — which would duplicate every bundle
+ * insert on the next boot. The file exists on disk only because the Loader
+ * needs a real include root to anchor `baseUrl` at the generation directory
+ * (the config dump anchors on the same file, so both compose over the
+ * identical base); every row of the composed tree therefore resolves through
+ * that generation's dependency closure, isolated from any other dsh
+ * installation sharing the Harness home.
  * @param name - the profile name.
  * @param userLayer - `false` skips parsing `cordis.patch.yml` (the default dump).
  * @returns the loaded profile.
  */
 export function prepareProfile(name: string, userLayer = true): Profile {
   const profile = loadProfile(NAME, name, INSTALL_ANCHOR, undefined, { userLayer })
-  writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
+  const generationDir = profileGenerationDir(profile, INSTALL_ANCHOR)
+  mkdirSync(generationDir, { recursive: true })
+  writeFileSync(join(generationDir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
   return profile
 }
 
@@ -227,7 +235,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     await app.current?.fiber.dispose()
   })
 
-  const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
+  const rootConfig = join(profileGenerationDir(composed.profile, INSTALL_ANCHOR), PROFILE_ROOT_FILENAME)
   // Recomposition for the live user layers: bundle layers below, overlays
   // above, so a user edit can never displace them. Parsed app arguments are
   // not in here at all — they live in app-provided services that survive a

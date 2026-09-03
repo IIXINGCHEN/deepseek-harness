@@ -1,5 +1,5 @@
 {
-  "feature": "upstream-update-staleness-gate-and-profile-precheck",
+  "feature": "codex-conformance-packaging-startup-settings-workspace",
   "pipelineType": "review-and-fix",
   "currentStage": 5,
   "stageName": "consolidated-report",
@@ -13,5 +13,5 @@
     "resolution-confirmation",
     "consolidated-report"
   ],
-  "lastUpdated": "2026-08-28T17:15:00+08:00"
+  "lastUpdated": "2026-08-31T18:30:00+08:00"
 }

@@ -70,19 +70,22 @@ class PresetTree extends Include {
   }
 
   /**
-   * Resolve a bare specifier from the harness rather than from the preset.
+   * Resolve a bare specifier from the installation generation rather than
+   * from the preset.
    *
    * `EntryTree.import()` resolves against the tree's own `baseUrl`, which
    * `Include` sets to the composition's directory. That is right for a
    * relative specifier — a preset's own files travel with it — and wrong for
    * a package name: a locally authored preset lives under the user's home,
    * where Node's upward `node_modules` walk never reaches the harness's own
-   * dependencies, so every `@deepseek-ai/dsh-*` row would fail to import. The
-   * mount records the host composition's base instead, which is inside the
-   * installed harness, and bare names resolve from there. An absolute
-   * filesystem path names neither base and becomes a file URL before Node's
-   * ESM loader receives it, which is required for drive-letter paths on
-   * Windows.
+   * dependencies, so every `@deepseek-ai/dsh-*` row would fail to import.
+   * The mount records the host composition's base instead — the profile's
+   * installation-generation directory, whose `node_modules` mirrors the
+   * running installation's dependency closure — so bare names resolve from
+   * the one installation running this tree, isolated from any other
+   * installation sharing the Harness home. An absolute filesystem path names
+   * neither base and becomes a file URL before Node's ESM loader receives
+   * it, which is required for drive-letter paths on Windows.
    *
    * {@link classifyRowSpecifier} makes that split, so discovery's health check
    * resolves every row from the same base this import uses.
@@ -385,8 +388,10 @@ export async function mountPreset(agentCtx: Context, preset: AgentPreset): Promi
   }
   const config: Include.Config = { path: pathToFileURL(preset.path).href }
   // Captured before the subtree exists: the standing scope context still
-  // carries the host composition's base, which is inside the installed
-  // harness and is therefore where a row's package name has to resolve from.
+  // carries the host composition's base — the profile's installation
+  // generation directory, whose node_modules mirrors the running
+  // installation's dependency closure — which is therefore where a row's
+  // package name has to resolve from.
   /* v8 ignore next -- the Loader sets `baseUrl` on the root before any scoped context derives from it */
   if (agentCtx.baseUrl !== undefined) harnessBase.set(config, agentCtx.baseUrl)
   // Before the record this mount is about to add: standing mounts are one per

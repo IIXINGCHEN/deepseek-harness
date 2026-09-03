@@ -327,7 +327,7 @@ describe('rows naming a plugin that cannot be resolved', () => {
     // `node_modules`, pointing at a checkout that is gone.
     const home = await mkdtemp(join(tmpdir(), 'dsh-presets-dangling-'))
     await mkdir(join(home, 'node_modules', '@scope'), { recursive: true })
-    await symlink(join(home, 'deleted-checkout'), join(home, 'node_modules', '@scope', 'pkg'))
+    await symlink(join(home, 'deleted-checkout'), join(home, 'node_modules', '@scope', 'pkg'), 'junction')
     await mkdir(join(home, 'presets', 'probe'), { recursive: true })
     await writeFile(join(home, 'presets', 'probe', COMPOSITION_FILE), "- id: p\n  name: '@scope/pkg'\n")
 

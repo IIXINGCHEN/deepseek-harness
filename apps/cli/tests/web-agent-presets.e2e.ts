@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { boot, healProfilesModuleFallback, loadOverlayPatches, loadProfile } from '@deepseek-ai/dsh-app-boot'
+import {
+  boot,
+  healProfilesModuleFallback,
+  loadOverlayPatches,
+  loadProfile,
+  profileGenerationDir,
+  type Profile,
+} from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -107,16 +114,27 @@ async function bootWeb(
   ]
   // The surface is patch layers over an empty preset root, so the root sits
   // outside this workspace and bare plugin names cannot resolve by Node's
-  // upward walk. The flat fallback the preset boot maintains is what makes
-  // them resolvable — the same mechanism, not a test-only shim.
+  // upward walk. The profile's installation-generation fallback — the same
+  // directory the profile boot anchors the composed root at — is what makes
+  // them resolvable: the same mechanism, not a test-only shim.
   const home = dirname(settingsFile)
-  await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR, home })
   const profileDir = join(home, 'profiles', 'spec')
+  // Layer-less: the product packages below are linked by hand, so the heal
+  // maintains only the installation closure.
+  const specProfile: Profile = {
+    name: 'spec',
+    dir: profileDir,
+    layers: [],
+    patchPath: join(profileDir, 'cordis.patch.yml'),
+    patches: [],
+    patchReload: 'startup',
+  }
+  await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR, profile: specProfile })
   await mkdir(profileDir, { recursive: true })
   // Product Bundles are installed into the Profile, not the dsh app. Model
   // pnpm's package link for only the selected products; their own production
   // dependencies resolve from the linked workspace packages, while shared
-  // peers still resolve through the installation fallback above.
+  // peers still resolve through the installation-generation fallback above.
   for (const packageDir of profilePackages) {
     const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as { name: string }
     const link = join(profileDir, 'node_modules', manifest.name)
@@ -136,7 +154,9 @@ async function bootWeb(
     const profile = loadProfile('dsh-test', 'spec', INSTALL_ANCHOR, home, { userLayer: false })
     bundlePatches = profile.layers.flatMap(layer => layer.patches)
   }
-  const rootConfig = join(profileDir, 'cordis.yml')
+  // The empty root lives in the installation-generation directory, so the
+  // composed tree's baseUrl anchors where the heal wrote the closure.
+  const rootConfig = join(profileGenerationDir(specProfile, INSTALL_ANCHOR), 'cordis.yml')
   await writeFile(rootConfig, '[]\n')
   return await boot('dsh-test', rootConfig, [...bundlePatches, ...overrides], (bootCtx) => {
     provideCmdline(bootCtx, { args: [], exit: () => {} })

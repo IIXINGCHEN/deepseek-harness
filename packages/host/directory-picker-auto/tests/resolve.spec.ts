@@ -12,12 +12,18 @@ const attended: DirectoryPickerHostFacts = {
   platform: 'darwin',
   env: {},
   linuxChooser: false,
+  packagedExecutable: false,
 }
 
 describe('resolveDirectoryPickerBackend', () => {
   it('resolves native for a loopback bind on a display platform', () => {
     expect(resolveDirectoryPickerBackend(attended)).toBe('native')
     expect(resolveDirectoryPickerBackend({ ...attended, platform: 'win32' })).toBe('native')
+  })
+
+  it('resolves native on win32 and darwin display platforms regardless of packaged status', () => {
+    expect(resolveDirectoryPickerBackend({ ...attended, packagedExecutable: true })).toBe('native')
+    expect(resolveDirectoryPickerBackend({ ...attended, platform: 'win32', packagedExecutable: true })).toBe('native')
   })
 
   it('resolves browse for an all-interfaces bind regardless of other signals', () => {

@@ -64,6 +64,7 @@ export async function apply(ctx: Context): Promise<void> {
     platform: process.platform,
     env: process.env,
     linuxChooser: hasLinuxChooserBinary(process.env.PATH, canExecute),
+    packagedExecutable: (process as NodeJS.Process & { pkg?: unknown }).pkg !== undefined,
   })
   await ctx.effect(async () => {
     // Root-tree create: the Loader root is in-memory (write() is a no-op), so

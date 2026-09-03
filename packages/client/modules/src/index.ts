@@ -761,8 +761,18 @@ export class ClientModuleRegistry extends Service {
     if (clientRel === undefined) {
       throw new Error(`client-modules: ${packageName} declares dsh.client but exports no "./client" bundle`)
     }
+    // A packaged executable's module proxy points `./client` at an ESM re-export
+    // stub; the real bundle bytes live at the `moduleFallback` target URL the
+    // proxy manifest records, and that file is what this row must serve.
+    const fallbackTarget = dsh !== null && typeof dsh === 'object'
+      ? (dsh as { moduleFallback?: { targets?: Record<string, unknown> } })
+        .moduleFallback?.targets?.['./client']
+      : undefined
+    const fallbackPath = typeof fallbackTarget === 'string' && fallbackTarget.startsWith('file:')
+      ? fileURLToPath(fallbackTarget)
+      : undefined
     const meta: PkgMeta = {
-      clientPath: join(dirname(pkgPath), clientRel),
+      clientPath: fallbackPath ?? join(dirname(pkgPath), clientRel),
       ...(decl.inject !== undefined ? { inject: decl.inject } : {}),
       external: decl.external ?? [],
       immediately: decl.immediately === true,

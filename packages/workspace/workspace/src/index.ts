@@ -287,7 +287,7 @@ export class WorkspaceRegistry extends Service {
       if (entity.path === canonical) return entity
     }
 
-    const workspaceName = title ?? basename(canonical)
+    const workspaceName = title ?? (basename(canonical) || canonical)
     const table = this.requireTable()
     const state = this.requireState()
     const id = WorkspaceId(randomUUID())

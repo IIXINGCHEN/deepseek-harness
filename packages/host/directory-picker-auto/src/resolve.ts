@@ -26,6 +26,8 @@ export interface DirectoryPickerHostFacts {
   env: DirectoryPickerEnv
   /** Whether a Linux chooser binary the native backend can drive (zenity/kdialog) is on PATH; consulted only when `platform` is linux. */
   linuxChooser: boolean
+  /** Whether the process runs inside a packaged executable, whose own image cannot spawn a plain-Node dialog worker. */
+  packagedExecutable: boolean
 }
 
 /** An env value counts only when set and non-blank (an empty export is "unset" by shell convention). */
@@ -37,10 +39,10 @@ const present = (value: string | undefined): boolean => value !== undefined && v
  * a loopback-only bind (an all-interfaces bind admits remote browsers no OS
  * chooser can reach), no SSH launch (under SSH port-forwarding the chooser
  * would open on the unattended server), and a servable display session —
- * assumed on darwin/win32, requiring `DISPLAY`/`WAYLAND_DISPLAY` plus a
- * chooser binary on linux, and never true elsewhere (the native backend
- * drives exactly darwin/win32/linux). Anything ambiguous resolves to
- * `browse`, which works everywhere.
+ * assumed on darwin/win32 (which drive native OS folder pickers directly or
+ * through PowerShell/osascript), requiring `DISPLAY`/`WAYLAND_DISPLAY` plus a
+ * chooser binary on linux, and never true elsewhere. Anything ambiguous
+ * resolves to `browse`, which works everywhere.
  * @param facts - the sampled host facts.
  * @returns the backend kind to mount.
  */
