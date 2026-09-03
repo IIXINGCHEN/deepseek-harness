@@ -609,6 +609,22 @@ export class Session {
   }
 
   /**
+   * Compatibility getter for plugins and extensions reading `session.events`.
+   * @returns an immutable snapshot of all events in the log.
+   */
+  get events(): readonly SessionEvent[] {
+    return this.snapshotEvents()
+  }
+
+  /**
+   * Allow direct iteration over session events.
+   * @returns iterator yielding logged session events in append order.
+   */
+  [Symbol.iterator](): Iterator<SessionEvent> {
+    return this.snapshotEvents()[Symbol.iterator]()
+  }
+
+  /**
    * Return this Session's events after its fork-inherited prefix.
    * @returns a fresh array containing child-owned events in log order.
    */

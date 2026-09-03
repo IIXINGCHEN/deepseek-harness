@@ -559,6 +559,9 @@ describe('Session', () => {
     ] as SessionEvent[]
     const session = Session.create(SessionId('seed-ok'), goodSeed)
     expect(session.snapshotEvents().slice(0, 3)).toEqual(goodSeed)
+    expect(session.events.slice(0, 3)).toEqual(goodSeed)
+    expect([...session.events]).toHaveLength(4)
+    expect([...session]).toHaveLength(4)
     expect(session.firstLiveSeq).toBe(3)
   })
 
