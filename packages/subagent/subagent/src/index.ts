@@ -128,6 +128,8 @@ export type {
   SubagentSendMessageOptions,
   SubagentSettledMessageSource,
 } from './continuation.ts'
+/** Compatibility shim for pre-0.1.2-rc.1 child setup contributions. */
+export type ContinuableSetupContribution = (childCtx: Context) => (() => void) | void
 export type * from './control-types.ts'
 export type { SubagentDescendantListEntry } from './list-children.ts'
 export type { SubagentRunEndInfo, SubagentRunInfo } from './types.ts'
@@ -296,6 +298,29 @@ export class SubagentRuntime extends TypertRemoteService {
    */
   interrupt(targetSessionId: SessionId, authority: SubagentInterruptAuthority): void {
     this.continuations?.interrupt(targetSessionId, authority)
+  }
+
+  /**
+   * Compatibility shim for plugins targeting pre-0.1.2-rc.1 subagent lifecycle.
+   * Compose one deployment capability into child creation context.
+   * @param contribution - synchronous child-scope installer.
+   * @returns the exact Cordis effect disposer.
+   */
+  registerContinuableSetup(contribution: ContinuableSetupContribution): () => void {
+    const unlisten = this.ctx.on('agent/created', ({ agent }) => {
+      try {
+        const agentCtx = (agent as unknown as { ctx?: Context }).ctx ?? this.ctx
+        const dispose = contribution(agentCtx)
+        if (typeof dispose === 'function') {
+          // oxlint-disable-next-line typescript/no-misused-promises -- synchronous disposer
+          agentCtx.effect(() => dispose, 'continuableSetup.disposer')
+        }
+      } catch {
+        // Compatibility containment: ignore errors from obsolete setups
+      }
+    })
+    // oxlint-disable-next-line typescript/no-misused-promises -- synchronous disposer
+    return this.ctx.effect(() => unlisten, 'subagents.registerContinuableSetup()')
   }
 
   /**
